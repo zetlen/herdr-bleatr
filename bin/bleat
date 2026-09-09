@@ -195,10 +195,16 @@ acquire_speech_lock() {
 	trap 'rm -rf "$SPEAK_LOCK"' EXIT
 }
 
-sanitize_speech() { # stdin -> one clean line for the speech synthesizer
+sanitize_speech() { # stdin -> one clean line, safe to hand to a shell
+	# Shell metacharacters are dropped rather than escaped. The sentence is
+	# written by a model reading untrusted terminal output, and `say_command`
+	# may splice $BLEATR_MESSAGE into a quoted remote command, where `$(...)`
+	# or a stray quote would run as code. Speech loses nothing by their
+	# absence; apostrophes go too, since `say` reads "agents" the same way.
 	tr -d '\000-\010\013-\037\177' | tr '\n\t' '  ' |
-		sed -e 's/[[:space:]][[:space:]]*/ /g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-			-e 's/^["'"'"'`]*//' -e 's/["'"'"'`]*$//' -e 's/\*\*//g' -e 's/`//g' |
+		sed -e "s/'//g" -e 's/[][$`\";&|<>(){}*#]/ /g' \
+			-e 's/[[:space:]][[:space:]]*/ /g' \
+			-e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
 		cut -c1-400
 }
 
@@ -405,7 +411,7 @@ bell_alias() { # Settings name -> file base name
 
 bell_file() {
 	case "$BELL" in
-	false | no | off | 0 | "") return 1 ;;
+	false | no | off | 0 | "" | terminal | herdr) return 1 ;;
 	esac
 	# The config value is a literal string, so a leading ~ is expanded here.
 	local path="${BELL/#\~\//$HOME/}"
@@ -428,7 +434,29 @@ bell_file() {
 	return 1
 }
 
-play_bell() {
+# Plugin commands run on the Herdr *server*, so an audio file plays on the
+# host machine and never on the one you are attached from. Herdr's own
+# notification is the only path out to the client, so `bell = "terminal"`
+# hands the bell to Herdr and lets its toast delivery decide where it lands.
+ring_terminal() { # sentence
+	local sound=done
+	[ "$EV_STATUS" = blocked ] && sound=request
+	if [ -n "${BLEATR_BELL_COMMAND:-}" ]; then
+		BLEATR_SOUND_FILE="$sound" sh -c "$BLEATR_BELL_COMMAND"
+		return 0
+	fi
+	"$HERDR" notification show "$(titlecase "$EV_AGENT") in $CTX_WORKSPACE" \
+		--body "$1" --sound "$sound" >/dev/null 2>&1 ||
+		log "herdr notification show failed; no bell"
+}
+
+play_bell() { # sentence
+	case "$BELL" in
+	terminal | herdr)
+		ring_terminal "$1"
+		return 0
+		;;
+	esac
 	local file
 	file="$(bell_file)" || return 0
 	if [ -n "${BLEATR_BELL_COMMAND:-}" ]; then
@@ -526,11 +554,14 @@ bleat() {
 	local sentence
 	sentence="$(summarize)"
 	[ -n "$sentence" ] || sentence="$(fallback_sentence)"
+	# One chokepoint: the fallback sentence carries the pane's terminal title,
+	# which the agent controls as surely as anything the summarizer read.
+	sentence="$(printf '%s' "$sentence" | sanitize_speech)"
 	debug "sentence: $sentence"
 	printf '%s\n' "$sentence"
 
 	acquire_speech_lock
-	play_bell
+	play_bell "$sentence"
 	speak "$sentence"
 }
 

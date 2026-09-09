@@ -166,6 +166,61 @@ else
 	printf 'skip a System Settings alert name resolves to its sound file: not macOS\n'
 fi
 
+setup bell-terminal
+export BLEATR_BELL=terminal
+run_bleat blocked >/dev/null
+if [ "$(cat "$CASE_DIR/bell" 2>/dev/null)" = "request" ] &&
+	[ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "bell say " ]; then
+	pass "bell = terminal hands a blocked bell to Herdr as the request sound"
+else
+	fail "bell = terminal hands a blocked bell to Herdr as the request sound" \
+		"$(cat "$CASE_DIR/bell" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup bell-terminal-no-file
+# `terminal` is not a sound file, so nothing must go looking for one on disk.
+export BLEATR_BELL=terminal
+unset BLEATR_BELL_COMMAND
+export HERDR_BIN_PATH=true
+run_bleat done >/dev/null
+if [ -e "$CASE_DIR/said" ] && ! grep -q "not found" "$CASE_DIR/stderr"; then
+	pass "bell = terminal never searches the sound directories"
+else
+	fail "bell = terminal never searches the sound directories" "$(cat "$CASE_DIR/stderr")"
+fi
+unset HERDR_BIN_PATH
+
+setup sanitize-shell-metacharacters
+# A summarizer sentence is model-written from untrusted terminal output. It
+# must not be able to smuggle code into a say_command that splices it into a
+# quoted remote shell.
+cat >"$CASE_DIR/evil.sh" <<'EVIL'
+printf '%s\n' 'Claude $(touch PWNED) finished; rm -rf `x` the agent'"'"'s tests'
+EVIL
+export BLEATR_SUMMARIZE_COMMAND="sh '$CASE_DIR/evil.sh'"
+# say_command splices the sentence into a nested quoted shell, the shape the
+# multi-host recipes use. Nothing in it may execute.
+export BLEATR_SAY_COMMAND="cd '$CASE_DIR' && sh -c \"printf '%s\\n' \\\"\$BLEATR_MESSAGE\\\" >> '$CASE_DIR/said'\""
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/PWNED" ] &&
+	[ "$(said)" = "Claude touch PWNED finished rm -rf x the agents tests" ]; then
+	pass "shell metacharacters are stripped from the summarizer's sentence"
+else
+	fail "shell metacharacters are stripped from the summarizer's sentence" \
+		"said: $(said)" "pwned: $([ -e "$CASE_DIR/PWNED" ] && echo yes || echo no)"
+fi
+
+setup sanitize-fallback-title
+# The fallback sentence carries the pane's terminal title, which the agent
+# controls just as surely as anything the summarizer read.
+titled_event="$(jq -cn --arg t '$(id) && echo' \
+	'{event:"pane_agent_status_changed",data:{type:"pane_agent_status_changed",pane_id:"w1:p1",workspace_id:"w1",agent_status:"done",agent:"claude",title:$t}}')"
+HERDR_PLUGIN_EVENT_JSON="$titled_event" bash "$BLEAT" >/dev/null 2>"$CASE_DIR/stderr"
+case "$(said)" in
+*'$'* | *'&'* | *'('*) fail "shell metacharacters are stripped from the fallback sentence" "$(said)" ;;
+*) pass "shell metacharacters are stripped from the fallback sentence" ;;
+esac
+
 setup bell-missing
 export BLEATR_BELL="NoSuchSound"
 run_bleat done >/dev/null

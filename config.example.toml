@@ -9,9 +9,14 @@ voice = ""
 
 # Sound to play before speaking: false, a macOS alert sound name as shown in
 # System Settings such as "Crystal" (file names such as "Glass" work too;
-# looked up in ~/Library/Sounds and /System/Library/Sounds), or a file path
-# such as "~/Music/ding.wav". Herdr plays its own sounds too; see [ui.sound]
-# in config.toml.
+# looked up in ~/Library/Sounds and /System/Library/Sounds), a file path such
+# as "~/Music/ding.wav", or "terminal".
+#
+# A sound file is played by this plugin, which runs on the Herdr *server* — so
+# it comes out of the host machine's speakers, not the one you are attached
+# from. "terminal" instead hands the bell to Herdr as a notification with its
+# `done` or `request` sound, which follows your `[ui.toast]` delivery and so
+# reaches you over SSH. See [ui.sound] in Herdr's config.toml as well.
 bell = false
 
 # Which small model writes the sentence.

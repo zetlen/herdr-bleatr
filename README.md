@@ -67,6 +67,29 @@ Print the config path and the effective settings:
 bash bin/bleat config
 ```
 
+## Attached over SSH?
+
+Plugin commands run as children of the Herdr server, so `say` and any bell
+sound file come out of the host machine. Two settings get the notification
+back to the machine you are sitting at:
+
+- `bell = "terminal"` hands the bell to Herdr instead of playing a file.
+  Herdr delivers it with your `[ui.toast]` settings, which can reach the
+  client terminal.
+- `say_command` routes the sentence anywhere. It runs under `sh -c` with the
+  sentence in `$BLEATR_MESSAGE`:
+
+  ```toml
+  say_command = "ssh my-mac say -- \"$BLEATR_MESSAGE\""
+  ```
+
+The sentence is stripped of shell metacharacters — `$`, backticks, quotes,
+`;`, `&`, `|`, redirections, parentheses, braces — before it reaches
+`say_command`. It is written by a model reading terminal output that the
+plugin does not control, so a summary that can smuggle `$(...)` into a remote
+shell would be a hole, not a quoting bug. Prefer passing it on stdin anyway
+(`say` and `espeak-ng` both read it) over splicing it into a command string.
+
 ## Mute
 
 The `toggle` action mutes and unmutes speech without disabling the plugin, and
