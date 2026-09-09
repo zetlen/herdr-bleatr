@@ -240,7 +240,9 @@ run_with_timeout() { # seconds cmd...
 		gtimeout "$secs" "$@"
 		return
 	fi
-	"$@" &
+	# Without a redirection of its own a background command reads from
+	# /dev/null, and the summarizer is promised the prompt on stdin.
+	"$@" <&0 &
 	local pid=$!
 	(
 		sleep "$secs"
