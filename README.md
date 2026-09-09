@@ -97,7 +97,7 @@ plugin does not control, so a summary that can smuggle `$(...)` into a remote
 shell would be a hole, not a quoting bug. Prefer passing it on stdin anyway
 (`say` and `espeak-ng` both read it) over splicing it into a command string.
 
-## Mute
+## Mute and skip
 
 The `toggle` action mutes and unmutes speech without disabling the plugin, and
 confirms with a Herdr toast. Bind it in Herdr's `config.toml`:
@@ -116,6 +116,17 @@ Or from a shell:
 herdr plugin action invoke bleatr.toggle
 ```
 
+The `skip` action stops the sentence being spoken now. Nothing is muted, so
+the next notification speaks as usual.
+
+```toml
+[[keys.command]]
+key = "prefix+s"
+type = "plugin_action"
+command = "bleatr.skip"
+description = "Bleatr: skip the current sentence"
+```
+
 ## Troubleshooting
 
 Show each hook run, the sentence it spoke, and any errors:
@@ -123,6 +134,10 @@ Show each hook run, the sentence it spoke, and any errors:
 ```sh
 herdr plugin log list --plugin bleatr
 ```
+
+Only one notification is spoken at a time. An agent that finishes while Bleatr
+is still talking is dropped rather than queued, and the log shows it as
+`another bleat has the floor; dropping this one`.
 
 Summarizer stderr is appended to `summarize.err` in the plugin state
 directory, `~/.local/state/herdr/plugins/bleatr` by default.
@@ -141,3 +156,7 @@ test/run.sh
 They use fake `say`, bell, and summarizer commands, so no audio plays and no
 model is billed. The last case needs a live Herdr session and drives a scratch
 pane in the current workspace.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

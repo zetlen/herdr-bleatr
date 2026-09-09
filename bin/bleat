@@ -11,6 +11,7 @@
 #   bleat test       run the pipeline for the current pane as if it went `done`
 #   bleat toggle     mute / unmute (writes a state file; the plugin stays enabled)
 #   bleat mute | unmute
+#   bleat skip       stop the sentence being spoken now, without muting
 #   bleat config     print the config file path and the effective settings
 #   bleat setup      copy config.example.toml into the config dir, unless a
 #                    config.toml is already there; print its path
@@ -97,6 +98,13 @@ setting() { # VAR key ENV_NAME default
 load_config() {
 	read_config_file
 	setting VOICE voice BLEATR_VOICE ""
+	setting RATE rate BLEATR_RATE ""
+	# Words per minute, and nothing else: a rate the speech command would
+	# refuse takes the whole sentence down with it, so anything that is not a
+	# positive number is dropped and no rate flag is passed at all.
+	case "$RATE" in
+	0* | *[!0-9]*) RATE="" ;;
+	esac
 	setting BELL bell BLEATR_BELL "false"
 	setting SUMMARY_MODEL summary_model BLEATR_SUMMARY_MODEL "claude"
 	setting MODEL_ID model_id BLEATR_MODEL_ID ""
@@ -115,8 +123,8 @@ print_config() {
 	printf 'config file: %s%s\n' "$CONFIG_FILE" "$([ -r "$CONFIG_FILE" ] || printf ' (missing, using defaults)')"
 	printf 'state dir:   %s\n' "$STATE_DIR"
 	printf 'muted:       %s\n' "$(is_muted && echo yes || echo no)"
-	printf 'voice=%s\nbell=%s\nsummary_model=%s\nmodel_id=%s\nnotify_on=%s\ncooldown_seconds=%s\nmax_words=%s\ntranscript_lines=%s\nsummary_timeout_seconds=%s\nsay_command=%s\nsummarize_command=%s\n' \
-		"$VOICE" "$BELL" "$SUMMARY_MODEL" "$MODEL_ID" "$NOTIFY_ON" "$COOLDOWN_SECONDS" \
+	printf 'voice=%s\nrate=%s\nbell=%s\nsummary_model=%s\nmodel_id=%s\nnotify_on=%s\ncooldown_seconds=%s\nmax_words=%s\ntranscript_lines=%s\nsummary_timeout_seconds=%s\nsay_command=%s\nsummarize_command=%s\n' \
+		"$VOICE" "$RATE" "$BELL" "$SUMMARY_MODEL" "$MODEL_ID" "$NOTIFY_ON" "$COOLDOWN_SECONDS" \
 		"$MAX_WORDS" "$TRANSCRIPT_LINES" "$SUMMARY_TIMEOUT" "$SAY_COMMAND" "$SUMMARIZE_COMMAND"
 }
 
@@ -232,13 +240,19 @@ run_with_timeout() { # seconds cmd...
 		gtimeout "$secs" "$@"
 		return
 	fi
-	"$@" &
+	# Without a redirection of its own a background command reads from
+	# /dev/null, and the summarizer is promised the prompt on stdin.
+	"$@" <&0 &
 	local pid=$!
 	(
 		sleep "$secs"
-		# Grandchildren too, or a shell wrapper dies while its model call lives on.
-		pkill -P "$pid" 2>/dev/null
+		# The wrapper goes first: a shell that loses the command it is running
+		# carries on to the next one, so killing what it runs only hurries it
+		# along. Its children are noted beforehand and killed by pid, which
+		# still reaches them once they are orphaned.
+		kids="$(pgrep -P "$pid" 2>/dev/null)"
 		kill "$pid" 2>/dev/null
+		[ -n "$kids" ] && kill $kids 2>/dev/null
 	) &
 	local watcher=$!
 	wait "$pid"
@@ -248,21 +262,83 @@ run_with_timeout() { # seconds cmd...
 }
 
 # Speech must not overlap: two agents finishing together would otherwise talk
-# over each other. A mkdir lock is atomic on every platform; a lock older than
-# the wait limit is treated as abandoned.
+# over each other. A mkdir lock is atomic on every platform. A bleat that finds
+# the lock held drops rather than queues behind it: a sentence waiting its turn
+# describes a pane the user has had a minute to read, and the per-pane cooldown
+# already keeps the dropped one from being a notification lost.
 SPEAK_LOCK="$STATE_DIR/speaking.lock"
-acquire_speech_lock() {
-	local waited=0
-	while ! mkdir "$SPEAK_LOCK" 2>/dev/null; do
-		if [ "$waited" -ge 90 ]; then
-			log "breaking stale speech lock"
-			rm -rf "$SPEAK_LOCK"
-			continue
-		fi
-		sleep 1
-		waited=$((waited + 1))
+
+claim_speech_lock() {
+	mkdir "$SPEAK_LOCK" 2>/dev/null || return 1
+	# The owner's pid is how the next bleat tells a lock in use from one left
+	# behind, and how the trap tells a lock still ours from one taken over.
+	printf '%s' "$$" >"$SPEAK_LOCK/pid"
+	trap release_speech_lock EXIT
+}
+
+release_speech_lock() {
+	[ "$(cat "$SPEAK_LOCK/pid" 2>/dev/null)" = "$$" ] || return 0
+	rm -rf "$SPEAK_LOCK"
+}
+
+# A bleat killed outright -- SIGKILL, a reboot -- never runs its EXIT trap, and
+# with nothing to break the lock it left behind every notification after it
+# would be dropped in silence. A dead owner hands the lock straight over; an
+# owner that is alive but wedged, or a pid that never landed in the lock, is
+# bounded by age instead, since speaking takes seconds and not minutes.
+speech_lock_abandoned() { # owner pid, may be empty
+	[ -n "$1" ] && ! kill -0 "$1" 2>/dev/null && return 0
+	[ -n "$(find "$SPEAK_LOCK" -maxdepth 0 -mmin +2 2>/dev/null)" ]
+}
+
+acquire_speech_lock() { # 0: the floor is ours, 1: someone else is speaking
+	claim_speech_lock && return 0
+	local owner
+	owner="$(cat "$SPEAK_LOCK/pid" 2>/dev/null)"
+	speech_lock_abandoned "$owner" || return 1
+	# Two bleats can find the same lock abandoned at once, so the handover goes
+	# through a rename: only one of them can move the directory aside, and a lock
+	# that changed hands in between is put back rather than taken from its new
+	# owner.
+	local stale="$SPEAK_LOCK.stale.$$"
+	mv "$SPEAK_LOCK" "$stale" 2>/dev/null || return 1
+	if [ "$(cat "$stale/pid" 2>/dev/null)" != "$owner" ]; then
+		mv "$stale" "$SPEAK_LOCK" 2>/dev/null || rm -rf "$stale"
+		return 1
+	fi
+	rm -rf "$stale"
+	log "taking over a speech lock left behind by pid ${owner:-unknown}"
+	claim_speech_lock
+}
+
+# `skip` stops the sentence being spoken and nothing else. The mute file is
+# not touched, so the next notification speaks. The lock names the bleat that
+# has the floor, not the voice: `say` is that bleat's child, and under
+# `say_command` the real speaker is a grandchild with `sh -c` in between. A
+# signalled bleat dies without waiting for what it started, so anything alive
+# under it would be orphaned and talk on. The tree comes down from the top
+# instead, the way run_with_timeout ends a wrapped summarizer, and the bleat's
+# own EXIT trap hands the lock back on the way out.
+skip_speech() {
+	local owner child children kids
+	owner="$(cat "$SPEAK_LOCK/pid" 2>/dev/null)"
+	if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+		debug "nothing is speaking; nothing to skip"
+		return 0
+	fi
+	# The whole tree is noted before any of it dies, and then killed from the
+	# top down. Taking the voice out from under its wrapper only frees the
+	# wrapper to run whatever came after it in the command.
+	children="$(pgrep -P "$owner" 2>/dev/null)"
+	kids=""
+	for child in $children; do
+		kids="$kids $(pgrep -P "$child" 2>/dev/null)"
 	done
-	trap 'rm -rf "$SPEAK_LOCK"' EXIT
+	kill "$owner" 2>/dev/null
+	[ -n "$children" ] && kill $children 2>/dev/null
+	[ -n "${kids// /}" ] && kill $kids 2>/dev/null
+	debug "skipped the sentence pid $owner was speaking"
+	return 0
 }
 
 sanitize_speech() { # stdin -> one clean line, safe to hand to a shell
@@ -275,7 +351,17 @@ sanitize_speech() { # stdin -> one clean line, safe to hand to a shell
 		sed -e "s/'//g" -e 's/[][$`\";&|<>(){}*#]/ /g' \
 			-e 's/[[:space:]][[:space:]]*/ /g' \
 			-e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
-		cut -c1-400
+		# A backstop on length, taken one character past the limit and then
+		# dropped back to the last space, so it never lands inside a word.
+		awk '{ if (length($0) > 400) { $0 = substr($0, 1, 401); sub(/ [^ ]*$/, "", $0) } print }'
+}
+
+# The prompt asks the model for at most $MAX_WORDS words and nothing holds it
+# to that; a paragraph it decides to write is half a minute of talking. Only
+# whole words are kept, since half a word is worse than a short sentence, and
+# a max_words that is not a positive number caps nothing rather than failing.
+cap_words() { # count; stdin -> the same line, at most `count` words of it
+	awk -v max="$1" '{ if (max ~ /^[0-9]+$/ && max > 0 && NF > max) NF = max; print }'
 }
 
 titlecase() {
@@ -453,7 +539,10 @@ summarize() { # -> sentence on stdout (fallback sentence on any failure)
 	local out
 	BLEATR_PROMPT_FILE="$prompt_file" run_with_timeout "$SUMMARY_TIMEOUT" sh -c "$cmd" \
 		<"$prompt_file" >"$prompt_file.reply" 2>>"$STATE_DIR/summarize.err"
-	out="$(sanitize_speech <"$prompt_file.reply")"
+	# The word cap goes here rather than in sanitize_speech, which the
+	# fallback sentence also runs through: that one is already short and has
+	# to keep its ending.
+	out="$(sanitize_speech <"$prompt_file.reply" | cap_words "$MAX_WORDS")"
 	[ -n "${BLEATR_DEBUG:-}" ] || rm -f "$prompt_file" "$prompt_file.out" "$prompt_file.reply"
 	if [ -n "$out" ]; then
 		printf '%s' "$out"
@@ -555,29 +644,50 @@ play_bell() { # sentence
 	fi
 }
 
+# `rate` is words per minute, which is what `say -r` and espeak's -s take.
+# spd-say's -R is not: Speech Dispatcher wants a relative -100 to 100, which it
+# maps onto the synthesizer's own range -- 0 is its default 175 wpm, +100 its
+# 450 wpm ceiling, -100 its 80 wpm floor. Running that mapping backwards, and
+# clamping at both ends, is how the setting keeps one unit across backends.
+spd_rate() { # words per minute -> -100..100
+	local wpm="$1" r
+	if [ "$wpm" -ge 175 ]; then
+		r=$(((wpm - 175) * 100 / 275))
+		[ "$r" -gt 100 ] && r=100
+	else
+		r=$(((wpm - 175) * 100 / 95))
+		[ "$r" -lt -100 ] && r=-100
+	fi
+	printf '%s' "$r"
+}
+
 # `say_command` runs under `sh -c` with the sentence in $BLEATR_MESSAGE and
-# makes `voice` the command's business. Without it, macOS `say` is used, and
-# on Linux the first available speech tool stands in for it.
+# makes `voice` and `rate` the command's business. Without it, macOS `say` is
+# used, and on Linux the first available speech tool stands in for it. A voice
+# name can carry a space, as "Bad News" does, so it stays quoted; an empty
+# rate has to disappear flag and all.
 speak() { # sentence
 	local text="$1"
 	if [ -n "$SAY_COMMAND" ]; then
 		BLEATR_MESSAGE="$text" sh -c "$SAY_COMMAND"
 	elif command -v say >/dev/null 2>&1; then
 		if [ -n "$VOICE" ]; then
-			say -v "$VOICE" -- "$text"
+			say -v "$VOICE" ${RATE:+-r "$RATE"} -- "$text"
 		else
-			say -- "$text"
+			say ${RATE:+-r "$RATE"} -- "$text"
 		fi
 	elif command -v spd-say >/dev/null 2>&1; then
+		local relative=""
+		[ -n "$RATE" ] && relative="$(spd_rate "$RATE")"
 		if [ -n "$VOICE" ]; then
-			spd-say -w -y "$VOICE" -- "$text"
+			spd-say -w -y "$VOICE" ${relative:+-R "$relative"} -- "$text"
 		else
-			spd-say -w -- "$text"
+			spd-say -w ${relative:+-R "$relative"} -- "$text"
 		fi
 	elif command -v espeak-ng >/dev/null 2>&1; then
-		espeak-ng ${VOICE:+-v "$VOICE"} -- "$text"
+		espeak-ng ${VOICE:+-v "$VOICE"} ${RATE:+-s "$RATE"} -- "$text"
 	elif command -v espeak >/dev/null 2>&1; then
-		espeak ${VOICE:+-v "$VOICE"} -- "$text"
+		espeak ${VOICE:+-v "$VOICE"} ${RATE:+-s "$RATE"} -- "$text"
 	else
 		log "no speech command found; set say_command in $CONFIG_FILE"
 		return 1
@@ -588,14 +698,49 @@ speak() { # sentence
 
 # Herdr shows no popup for the tab the user is looking at, and neither does
 # this plugin. The hook's context names the event pane's tab; only the
-# session snapshot names the focused one. Anything unknown counts as not
-# focused, so a failed lookup still speaks.
+# session snapshot names the focused one, and the same snapshot says whether
+# the event's pane is still open. One jq pass reads both into SNAP_*.
+read_snapshot() {
+	SNAP_FOCUSED_TAB="" SNAP_PANES=0 SNAP_PANE_LIVE=0
+	[ -z "${BLEATR_SKIP_HERDR:-}" ] || return 1
+	local snapshot
+	snapshot="$("$HERDR" api snapshot 2>/dev/null)"
+	[ -n "$snapshot" ] || return 1
+	eval "$(printf '%s' "$snapshot" | jq -r --arg pane "$EV_PANE" '.result.snapshot // {} |
+		"SNAP_FOCUSED_TAB=\(.focused_tab_id // "" | @sh) SNAP_PANES=\(.panes // [] | length) SNAP_PANE_LIVE=\([.panes[]? | select(.pane_id == $pane)] | length)"' 2>/dev/null)"
+}
+
+# Anything unknown counts as not focused, so a failed lookup still speaks.
 in_focused_tab() {
 	[ -n "$CTX_TAB_ID" ] || return 1
-	[ -z "${BLEATR_SKIP_HERDR:-}" ] || return 1
-	local focused
-	focused="$("$HERDR" api snapshot 2>/dev/null | jq -r '.result.snapshot.focused_tab_id // empty' 2>/dev/null)"
-	[ -n "$focused" ] && [ "$focused" = "$CTX_TAB_ID" ]
+	read_snapshot || return 1
+	[ -n "$SNAP_FOCUSED_TAB" ] && [ "$SNAP_FOCUSED_TAB" = "$CTX_TAB_ID" ]
+}
+
+# The gate at the top of bleat() is old news by the time there is a sentence to
+# say: summarizing takes seconds, and the lock can be someone else's for longer
+# still. In that time the user may have hit mute, switched to the pane's tab,
+# or closed the pane, and speaking anyway is how a plugin like this one gets
+# muted for good. Asked again here, out of one snapshot -- a second herdr
+# round-trip just before speaking would cost more than it could tell us.
+# SPEAK_FOCUSED_TAB excuses `bleat test` from the tab check, as it does above.
+still_worth_speaking() {
+	if is_muted; then
+		debug "muted while the sentence was being prepared"
+		return 1
+	fi
+	read_snapshot || return 0
+	if [ -z "${SPEAK_FOCUSED_TAB:-}" ] && [ -n "$CTX_TAB_ID" ] && [ "$SNAP_FOCUSED_TAB" = "$CTX_TAB_ID" ]; then
+		debug "tab $CTX_TAB_ID is focused now; pane $EV_PANE is in view"
+		return 1
+	fi
+	# A snapshot listing no panes at all -- an older Herdr, a half-answered call
+	# -- says nothing about this one; only a list without it means the pane went.
+	if [ -n "$EV_PANE" ] && [ "$SNAP_PANES" -gt 0 ] && [ "$SNAP_PANE_LIVE" -eq 0 ]; then
+		debug "pane $EV_PANE is gone"
+		return 1
+	fi
+	return 0
 }
 
 # --------------------------------------------------------------- cooldown ---
@@ -603,6 +748,12 @@ in_focused_tab() {
 # Integrations can flap a status within a second or two; one bleat per pane
 # and status inside the cooldown window is plenty.
 in_cooldown() {
+	# Stamps are only ever added, one per pane and status, so day-old ones are
+	# swept off here. Best-effort by design: a find that fails, or is not
+	# there at all, must never cost a notification. Only `last.*` files at the
+	# top of the dir are eligible, which leaves `muted`, `intro-seen`,
+	# `summarize.err`, and everything under the speech lock alone.
+	find "$STATE_DIR" -maxdepth 1 -name 'last.*' -type f -mtime +1 -delete 2>/dev/null || true
 	[ "$COOLDOWN_SECONDS" -gt 0 ] 2>/dev/null || return 1
 	local key stamp now
 	key="$(printf '%s-%s' "$EV_PANE" "$EV_STATUS" | tr -c 'A-Za-z0-9_-' '_')"
@@ -658,7 +809,11 @@ bleat() {
 	debug "sentence: $sentence"
 	printf '%s\n' "$sentence"
 
-	acquire_speech_lock
+	if ! acquire_speech_lock; then
+		log "another bleat has the floor; dropping this one"
+		return 0
+	fi
+	still_worth_speaking || return 0
 	play_bell "$sentence"
 	speak "$sentence"
 }
@@ -685,13 +840,14 @@ test) test_bleat ;;
 toggle) if is_muted; then set_muted no; else set_muted yes; fi ;;
 mute) set_muted yes ;;
 unmute) set_muted no ;;
+skip) skip_speech ;;
 config) print_config ;;
 setup) setup_config ;;
 intro) print_intro "${2:-}" ;;
 intro-popup) open_intro_popup ;;
 startup) startup ;;
 *)
-	log "usage: bleat [event|test|toggle|mute|unmute|config|setup|intro|intro-popup|startup]"
+	log "usage: bleat [event|test|toggle|mute|unmute|skip|config|setup|intro|intro-popup|startup]"
 	exit 2
 	;;
 esac

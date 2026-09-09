@@ -52,3 +52,10 @@ title = "Bleatr: mute / unmute"
 description = "Toggle speech without disabling the plugin"
 contexts = ["global"]
 command = ["bash", "bin/bleat", "toggle"]
+
+[[actions]]
+id = "skip"
+title = "Bleatr: skip the current sentence"
+description = "Stop the sentence being spoken now; the next notification still speaks"
+contexts = ["global"]
+command = ["bash", "bin/bleat", "skip"]

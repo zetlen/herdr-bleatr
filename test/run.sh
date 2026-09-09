@@ -154,6 +154,64 @@ else
 	fail "a hanging summarizer is cut off at the timeout" "said: $(said)" "elapsed: ${elapsed}s"
 fi
 
+setup max-words
+# The prompt asks for at most max_words words; a model that runs on regardless
+# is cut back to them, and only between words.
+export BLEATR_MAX_WORDS=6
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr finished the plugin tests and wants you to review the README.\n'"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished the plugin" ]; then
+	pass "a long summary is cut to max_words whole words"
+else
+	fail "a long summary is cut to max_words whole words" "$(said)"
+fi
+
+setup max-words-inside-budget
+export BLEATR_MAX_WORDS=25
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr fixed the parser and stopped.\n'"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr fixed the parser and stopped." ]; then
+	pass "a summary inside the budget is spoken whole"
+else
+	fail "a summary inside the budget is spoken whole" "$(said)"
+fi
+
+setup max-words-not-a-number
+# A hand-edited config can put anything in max_words.
+export BLEATR_MAX_WORDS=lots
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr fixed the parser and stopped.\n'"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr fixed the parser and stopped." ]; then
+	pass "a non-numeric max_words caps nothing"
+else
+	fail "a non-numeric max_words caps nothing" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup max-words-template
+# The cap is the summarizer's. The template sentence is already short and
+# keeps its ending however small max_words is.
+export BLEATR_MAX_WORDS=3
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; then
+	pass "max_words does not cut the template sentence"
+else
+	fail "max_words does not cut the template sentence" "$(said)"
+fi
+
+setup speech-length-backstop
+# Behind max_words, sanitize_speech stops a sentence at about 400 characters.
+# That stop lands between words too: every word here is the same token, so a
+# cut inside one shows up as a short last word.
+export BLEATR_MAX_WORDS=9999
+export BLEATR_SUMMARIZE_COMMAND="yes hedgehog | head -n 100 | tr '\\n' ' '"
+run_bleat done >/dev/null
+spoken="$(said)"
+if [ "${#spoken}" -le 401 ] && [ "${spoken##* }" = hedgehog ]; then
+	pass "an overlong sentence is stopped at a word boundary"
+else
+	fail "an overlong sentence is stopped at a word boundary" "length ${#spoken}, last word ${spoken##* }"
+fi
+
 setup cooldown
 run_bleat done >/dev/null
 run_bleat done >/dev/null
@@ -162,6 +220,48 @@ if [ "$(said | wc -l | tr -d ' ')" = 2 ]; then
 	pass "a repeat within the cooldown is skipped, a different status is not"
 else
 	fail "a repeat within the cooldown is skipped, a different status is not" "$(said)"
+fi
+
+setup stale-stamps
+# in_cooldown leaves a stamp per pane and status behind and sweeps day-old
+# ones on its way in. The run below is inside the cooldown -- a current stamp
+# for its own pane and status is planted first -- so it sweeps and returns
+# before the speech lock is taken, which is what lets the lock directory sit
+# here as a decoy. `muted` is not one of the decoys: a mute file would stop
+# the run before the cooldown check. The same name filter protects it as
+# protects `intro-seen`.
+mkdir -p "$CASE_DIR/state/speaking.lock"
+date +%s >"$CASE_DIR/state/last.w1_p1-done"
+: >"$CASE_DIR/state/last.w1_p9-blocked"
+: >"$CASE_DIR/state/intro-seen"
+: >"$CASE_DIR/state/summarize.err"
+: >"$CASE_DIR/state/speaking.lock/last.inner"
+touch -t 202001010000 "$CASE_DIR/state/last.w1_p9-blocked" "$CASE_DIR/state/intro-seen" \
+	"$CASE_DIR/state/summarize.err" "$CASE_DIR/state/speaking.lock/last.inner"
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/state/last.w1_p9-blocked" ] && [ -e "$CASE_DIR/state/last.w1_p1-done" ]; then
+	pass "a day-old cooldown stamp is swept and a current one is kept"
+else
+	fail "a day-old cooldown stamp is swept and a current one is kept" "$(ls "$CASE_DIR/state")"
+fi
+if [ -e "$CASE_DIR/state/intro-seen" ] && [ -e "$CASE_DIR/state/summarize.err" ] &&
+	[ -e "$CASE_DIR/state/speaking.lock/last.inner" ]; then
+	pass "the sweep leaves the state files and the speech lock alone"
+else
+	fail "the sweep leaves the state files and the speech lock alone" "$(find "$CASE_DIR/state")"
+fi
+
+setup sweep-best-effort
+# The sweep is housekeeping: a find that fails, or is not on the machine at
+# all, must not cost a notification.
+mkdir -p "$CASE_DIR/bin"
+printf '#!/bin/sh\nexit 3\n' >"$CASE_DIR/bin/find"
+chmod +x "$CASE_DIR/bin/find"
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; then
+	pass "a failing sweep still speaks"
+else
+	fail "a failing sweep still speaks" "$(said)" "$(cat "$CASE_DIR/stderr")"
 fi
 
 setup mute
@@ -212,6 +312,88 @@ if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; th
 	pass "an event is spoken when the focused tab cannot be read"
 else
 	fail "an event is spoken when the focused tab cannot be read" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+unset HERDR_BIN_PATH
+
+setup mute-mid-flight
+# The gates at the top of bleat() are old news by the time there is a sentence
+# to say. A mute pressed while the model was writing still has to land, and
+# without a bell either.
+export BLEATR_BELL="$CASE_DIR/ding.wav"
+: >"$CASE_DIR/ding.wav"
+export BLEATR_SUMMARIZE_COMMAND=": > \"$CASE_DIR/state/muted\"; printf 'Claude finished the tests.\n'"
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/said" ] && [ ! -e "$CASE_DIR/bell" ]; then
+	pass "a mute during the summary suppresses the sentence"
+else
+	fail "a mute during the summary suppresses the sentence" "$(said)" "$(cat "$CASE_DIR/bell" 2>/dev/null)"
+fi
+
+setup focus-mid-flight
+# The other half of it: the user switches into the pane's tab while the model
+# writes, and by the time the sentence is ready they are reading the pane. The
+# fake herdr answers from a file the summarizer rewrites, which is the switch.
+unset BLEATR_SKIP_HERDR
+cat >"$CASE_DIR/herdr" <<FAKE
+#!/bin/sh
+case "\$1 \$2" in
+"api snapshot") printf '{"result":{"snapshot":{"focused_tab_id":"%s"}}}\n' "\$(cat "$CASE_DIR/focused")" ;;
+*) exit 1 ;;
+esac
+FAKE
+chmod +x "$CASE_DIR/herdr"
+export HERDR_BIN_PATH="$CASE_DIR/herdr"
+export HERDR_PLUGIN_CONTEXT_JSON='{"workspace_id":"w1","workspace_label":"herdr-bleatr","tab_id":"w1:t1","tab_label":"1"}'
+printf 'w1:t2\n' >"$CASE_DIR/focused"
+export BLEATR_SUMMARIZE_COMMAND="printf 'w1:t1\n' >\"$CASE_DIR/focused\"; printf 'Claude finished the tests.\n'"
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/said" ]; then
+	pass "switching into the pane's tab during the summary suppresses the sentence"
+else
+	fail "switching into the pane's tab during the summary suppresses the sentence" "$(said)"
+fi
+# The same run with the user still elsewhere speaks, so it was the switch that
+# silenced the one above and not the fake.
+printf 'w1:t2\n' >"$CASE_DIR/focused"
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude finished the tests.\n'"
+BLEATR_COOLDOWN_SECONDS=0 run_bleat done >/dev/null
+if [ "$(said)" = "Claude finished the tests." ]; then
+	pass "a pane whose tab stays in the background is spoken"
+else
+	fail "a pane whose tab stays in the background is spoken" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+unset HERDR_BIN_PATH
+
+setup pane-closed
+# The snapshot read just before speaking also says whether the pane is still
+# open; one closed while the model wrote has nobody left to tell. A snapshot
+# that lists no panes at all knows nothing about this one, which is why the
+# fake herdr in the cases above -- it answers with a focused tab and nothing
+# else -- still speaks.
+unset BLEATR_SKIP_HERDR
+cat >"$CASE_DIR/herdr" <<FAKE
+#!/bin/sh
+case "\$1 \$2" in
+"api snapshot") cat "$CASE_DIR/snapshot" ;;
+*) exit 1 ;;
+esac
+FAKE
+chmod +x "$CASE_DIR/herdr"
+export HERDR_BIN_PATH="$CASE_DIR/herdr"
+printf '{"result":{"snapshot":{"focused_tab_id":"w1:t2","panes":[{"pane_id":"w1:p1"}]}}}\n' >"$CASE_DIR/snapshot"
+run_bleat done >/dev/null
+if [ -e "$CASE_DIR/said" ]; then
+	pass "a pane the snapshot still lists is spoken"
+else
+	fail "a pane the snapshot still lists is spoken" "$(cat "$CASE_DIR/stderr")"
+fi
+rm -f "$CASE_DIR/said"
+printf '{"result":{"snapshot":{"focused_tab_id":"w1:t2","panes":[{"pane_id":"w1:p9"}]}}}\n' >"$CASE_DIR/snapshot"
+BLEATR_COOLDOWN_SECONDS=0 run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/said" ]; then
+	pass "a pane closed while the summary was written is not spoken"
+else
+	fail "a pane closed while the summary was written is not spoken" "$(said)"
 fi
 unset HERDR_BIN_PATH
 
@@ -457,22 +639,253 @@ start_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
 for i in 1 2 3 4 5 6 7 8 9 10; do run_bleat working >/dev/null; done
 end_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
 per_run=$(((end_ms - start_ms) / 10))
-if [ "$per_run" -lt 250 ]; then
-	pass "an ignored event costs under 250 ms (${per_run} ms)"
+# A shared CI runner is slower and noisier than a development machine, and a
+# timing case that goes red for the noise says nothing about the code. The
+# strict budget stays where the signal is.
+budget=250
+[ -n "${CI:-}" ] && budget=1000
+if [ "$per_run" -lt "$budget" ]; then
+	pass "an ignored event costs under $budget ms (${per_run} ms)"
 else
-	fail "an ignored event costs under 250 ms" "measured ${per_run} ms per run"
+	fail "an ignored event costs under $budget ms" "measured ${per_run} ms per run"
 fi
 
-setup lock-serializes
-export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 1; printf 'end\n' >> \"$CASE_DIR/order\""
+setup lock-drops
+# Speech still never overlaps, but the bleat that cannot have the floor drops
+# instead of queueing behind it: a sentence that waited its turn describes a
+# pane the user has already read. The second run starts once the first is
+# inside `say`, so it always meets a held lock.
+export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 1; printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"; printf 'end\n' >> \"$CASE_DIR/order\""
 export BLEATR_COOLDOWN_SECONDS=0
 run_bleat done >/dev/null &
-run_bleat blocked >/dev/null &
-wait
-if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start end start end " ]; then
+first=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -s "$CASE_DIR/order" ] && break
+	sleep 0.2
+done
+run_bleat blocked >/dev/null
+wait "$first"
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start end " ]; then
 	pass "concurrent bleats do not overlap"
 else
 	fail "concurrent bleats do not overlap" "$(cat "$CASE_DIR/order" | tr '\n' ' ')"
+fi
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && grep -q dropping "$CASE_DIR/stderr"; then
+	pass "the second bleat is dropped and logged, and the first is unharmed"
+else
+	fail "the second bleat is dropped and logged, and the first is unharmed" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup lock-abandoned
+# A bleat killed outright never runs its EXIT trap, and the lock it leaves must
+# not silence every notification after it. The pid inside names a process that
+# is gone, so the next bleat takes the lock over -- and gives it back.
+mkdir -p "$CASE_DIR/state/speaking.lock"
+sh -c 'printf %s $$' >"$CASE_DIR/state/speaking.lock/pid"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && [ ! -e "$CASE_DIR/state/speaking.lock" ]; then
+	pass "a lock left behind by a dead bleat is taken over and released"
+else
+	fail "a lock left behind by a dead bleat is taken over and released" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup lock-handover
+# Once a lock has changed hands, the bleat that used to own it must not take
+# the new owner's lock down with it on the way out -- a third bleat would then
+# start talking over the second. A waits inside `say` holding the lock; its
+# lock is aged so that B takes it over and holds it in turn; A is then let go,
+# and C, arriving while B is still speaking, has to find B's lock and drop.
+export BLEATR_NOTIFY_ON="done blocked idle"
+BLEATR_SAY_COMMAND="printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"; : > \"$CASE_DIR/a-up\"; while [ ! -e \"$CASE_DIR/a-go\" ]; do sleep 0.1; done" \
+	run_bleat done >/dev/null &
+a=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -e "$CASE_DIR/a-up" ] && break
+	sleep 0.2
+done
+touch -t 202001010000 "$CASE_DIR/state/speaking.lock"
+BLEATR_SAY_COMMAND="printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"; : > \"$CASE_DIR/b-up\"; while [ ! -e \"$CASE_DIR/b-go\" ]; do sleep 0.1; done" \
+	run_bleat blocked >/dev/null &
+b=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -e "$CASE_DIR/b-up" ] && break
+	sleep 0.2
+done
+: >"$CASE_DIR/a-go"
+wait "$a"
+run_bleat idle >/dev/null
+: >"$CASE_DIR/b-go"
+wait "$b"
+if ! said | grep -q 'is idle'; then
+	pass "a bleat whose lock was taken over leaves the new owner's alone"
+else
+	fail "a bleat whose lock was taken over leaves the new owner's alone" "$(said)"
+fi
+
+setup lock-stale
+# The pid can outlive the bleat that wrote it -- wedged, or handed to something
+# else after a reboot -- and a lock can exist for an instant before the pid is
+# in it. Age is the backstop: nothing this plugin says takes minutes.
+mkdir -p "$CASE_DIR/state/speaking.lock"
+printf '%s' "$$" >"$CASE_DIR/state/speaking.lock/pid"
+touch -t 202001010000 "$CASE_DIR/state/speaking.lock"
+run_bleat done >/dev/null
+if [ -e "$CASE_DIR/said" ]; then
+	pass "a lock older than any sentence is taken over"
+else
+	fail "a lock older than any sentence is taken over" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup skip
+# `skip` stops the sentence being spoken and nothing else. The fake say
+# writes `end` two seconds in, and the case waits
+# past that: a signal that reached the bleat but not the voice under it leaves
+# the voice orphaned and still talking, which is the same as not skipping.
+export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 2; printf 'end\n' >> \"$CASE_DIR/order\""
+export BLEATR_COOLDOWN_SECONDS=0
+# The bleat is signalled, so it goes through a subshell that ends on `true`:
+# a job this shell reaped as killed would print a Terminated notice among the
+# results, which is noise here and looks like a failure.
+(run_bleat done >/dev/null || true) 2>/dev/null &
+first=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -s "$CASE_DIR/order" ] && break
+	sleep 0.2
+done
+bash "$BLEAT" skip 2>"$CASE_DIR/skip-stderr"
+wait "$first"
+sleep 2.5
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start " ]; then
+	pass "skip stops the sentence being spoken"
+else
+	fail "skip stops the sentence being spoken" "$(cat "$CASE_DIR/order" 2>/dev/null | tr '\n' ' ')"
+fi
+# The skipped bleat still has to run its EXIT trap on the way out. A lock left
+# behind would drop every notification after it for the next two minutes.
+if [ ! -e "$CASE_DIR/state/speaking.lock" ]; then
+	pass "the skipped bleat hands back the speech lock"
+else
+	fail "the skipped bleat hands back the speech lock" "$(find "$CASE_DIR/state")"
+fi
+BLEATR_SAY_COMMAND="printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"" run_bleat blocked >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr is waiting for your approval or an answer." ]; then
+	pass "a skip does not mute: the next notification speaks"
+else
+	fail "a skip does not mute: the next notification speaks" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup skip-nothing-speaking
+# Skipping when nothing is speaking is not an error: no output and a zero
+# exit, including when a lock is lying around naming a bleat already gone,
+# where the pid could since have been handed to something else entirely.
+bash "$BLEAT" skip 2>"$CASE_DIR/skip-stderr"
+rc=$?
+mkdir -p "$CASE_DIR/state/speaking.lock"
+sh -c 'printf %s $$' >"$CASE_DIR/state/speaking.lock/pid"
+bash "$BLEAT" skip 2>>"$CASE_DIR/skip-stderr"
+rc_stale=$?
+if [ "$rc" = 0 ] && [ "$rc_stale" = 0 ] && [ ! -s "$CASE_DIR/skip-stderr" ]; then
+	pass "skip with nothing speaking is a silent no-op"
+else
+	fail "skip with nothing speaking is a silent no-op" "rc $rc/$rc_stale" "$(cat "$CASE_DIR/skip-stderr")"
+fi
+rm -rf "$CASE_DIR/state/speaking.lock"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; then
+	pass "a skip that found nothing to stop does not mute either"
+else
+	fail "a skip that found nothing to stop does not mute either" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup skip-grandchild
+# The pid in the lock is the bleat, and under say_command the voice is two
+# levels below it: `sh -c` is the child and the speaker runs under that. A skip
+# that killed only the direct child would orphan the speaker, which talks on --
+# here, by writing `end` a couple of seconds after the skip. The trailing `:`
+# keeps sh from exec'ing the script and collapsing the tree by a level.
+cat >"$CASE_DIR/voice.sh" <<VOICE
+#!/bin/sh
+printf 'start\n' >> "$CASE_DIR/order"
+sleep 2
+printf 'end\n' >> "$CASE_DIR/order"
+VOICE
+chmod +x "$CASE_DIR/voice.sh"
+export BLEATR_SAY_COMMAND="\"$CASE_DIR/voice.sh\"; :"
+(run_bleat done >/dev/null || true) 2>/dev/null &
+first=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -s "$CASE_DIR/order" ] && break
+	sleep 0.2
+done
+bash "$BLEAT" skip 2>"$CASE_DIR/skip-stderr"
+wait "$first"
+sleep 2.5
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start " ]; then
+	pass "skip silences a say_command speaker running under sh -c"
+else
+	fail "skip silences a say_command speaker running under sh -c" "$(cat "$CASE_DIR/order" 2>/dev/null | tr '\n' ' ')"
+fi
+
+setup rate
+# `rate` is words per minute and reaches `say` as -r. The other cases replace
+# `say` with say_command; this one needs the real code path, so a fake `say`
+# goes on PATH -- which is also the only `say` a Linux runner has.
+unset BLEATR_SAY_COMMAND
+export BLEATR_COOLDOWN_SECONDS=0
+mkdir -p "$CASE_DIR/bin"
+cat >"$CASE_DIR/bin/say" <<FAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CASE_DIR/say-args"
+FAKE
+chmod +x "$CASE_DIR/bin/say"
+sentence="Claude in herdr-bleatr finished and is waiting for you."
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-- $sentence" ]; then
+	pass "an unset rate passes no rate flag at all"
+else
+	fail "an unset rate passes no rate flag at all" "$(cat "$CASE_DIR/say-args" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")"
+fi
+rm -f "$CASE_DIR/say-args"
+BLEATR_RATE=220 PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-r 220 -- $sentence" ]; then
+	pass "rate reaches say as -r words per minute"
+else
+	fail "rate reaches say as -r words per minute" "$(cat "$CASE_DIR/say-args" 2>/dev/null)"
+fi
+rm -f "$CASE_DIR/say-args"
+BLEATR_VOICE="Bad News" BLEATR_RATE=220 PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-v Bad News -r 220 -- $sentence" ]; then
+	pass "a voice with a space in it survives alongside the rate"
+else
+	fail "a voice with a space in it survives alongside the rate" "$(cat "$CASE_DIR/say-args" 2>/dev/null)"
+fi
+rm -f "$CASE_DIR/say-args"
+# A rate `say` would refuse costs the whole sentence, so a value that is not a
+# positive number is dropped instead of passed on.
+printf 'rate = "fast"\n' >"$CASE_DIR/config/config.toml"
+out="$(bash "$BLEAT" config 2>/dev/null)"
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if printf '%s\n' "$out" | grep -q '^rate=$' && [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-- $sentence" ]; then
+	pass "a non-numeric rate is dropped rather than passed on"
+else
+	fail "a non-numeric rate is dropped rather than passed on" "$(cat "$CASE_DIR/say-args" 2>/dev/null)" "$out"
+fi
+
+setup rate-say-command
+# A custom say_command owns its own rate, the way it owns its own voice: the
+# `say` path is not taken at all, so there is nowhere for a flag to be added.
+mkdir -p "$CASE_DIR/bin"
+cat >"$CASE_DIR/bin/say" <<FAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CASE_DIR/say-args"
+FAKE
+chmod +x "$CASE_DIR/bin/say"
+export BLEATR_RATE=220
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && [ ! -e "$CASE_DIR/say-args" ]; then
+	pass "rate is ignored when say_command is set"
+else
+	fail "rate is ignored when say_command is set" "$(said)" "$(cat "$CASE_DIR/say-args" 2>/dev/null)"
 fi
 
 # --- live case ---------------------------------------------------------------
