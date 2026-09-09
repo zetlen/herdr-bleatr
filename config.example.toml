@@ -50,5 +50,8 @@ summary_timeout_seconds = 25
 # Run this instead of the summary_model preset. Runs under `sh -c` with the
 # prompt path in $BLEATR_PROMPT_FILE and the prompt text on stdin; it must
 # print the sentence on stdout. `summary_model` and `model_id` are ignored
-# when set.
+# when set. Any CLI that reads a prompt on stdin works:
 # summarize_command = 'gemini -m gemini-2.5-flash < "$BLEATR_PROMPT_FILE"'
+# summarize_command = 'opencode run -m anthropic/claude-haiku-4-5 --variant fast'
+# summarize_command = 'llm -m claude-haiku-4.5'
+# summarize_command = 'aichat -m claude:claude-haiku-4.5'

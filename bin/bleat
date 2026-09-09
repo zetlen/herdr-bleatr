@@ -326,13 +326,15 @@ summarize_command_for() { # preset -> command string, or empty for none
 	claude)
 		# Extended thinking is on by default and spends ~2500 output tokens
 		# (25 seconds) on a one-sentence answer; MAX_THINKING_TOKENS=0 turns it
-		# off. MCP servers are skipped because the model gets no tools anyway.
-		printf 'MAX_THINKING_TOKENS=0 claude -p --model %s --tools "" --no-session-persistence --output-format text --strict-mcp-config --mcp-config %s < "$BLEATR_PROMPT_FILE"' \
-			"${MODEL_ID:-haiku}" "'{\"mcpServers\":{}}'"
+		# off. --safe-mode skips CLAUDE.md, hooks, plugins, and MCP servers,
+		# which the model has no use for here and which cost about a second
+		# to load.
+		printf 'MAX_THINKING_TOKENS=0 claude -p --model %s --tools "" --no-session-persistence --safe-mode --setting-sources user --output-format text < "$BLEATR_PROMPT_FILE"' \
+			"${MODEL_ID:-haiku}"
 		;;
 	codex)
 		# `codex exec` reads the prompt from stdin when the prompt argument is `-`.
-		printf 'codex exec --skip-git-repo-check --sandbox read-only --color never --model %s --output-last-message "$BLEATR_PROMPT_FILE.out" - < "$BLEATR_PROMPT_FILE" >/dev/null 2>&1 && cat "$BLEATR_PROMPT_FILE.out"' \
+		printf 'codex exec --skip-git-repo-check --sandbox read-only --color never --model %s -c model_reasoning_effort=low --output-last-message "$BLEATR_PROMPT_FILE.out" - < "$BLEATR_PROMPT_FILE" >/dev/null 2>&1 && cat "$BLEATR_PROMPT_FILE.out"' \
 			"${MODEL_ID:-gpt-5.1-codex-mini}"
 		;;
 	none | off | false | "") printf '' ;;
