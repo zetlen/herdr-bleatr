@@ -1,0 +1,48 @@
+name: tests
+
+# test/run.sh needs bash, jq, and python3 and nothing else. It replaces say,
+# the bell player, and the summarizer with commands that only record what they
+# were given, so no audio plays and no model is billed. Its one live case runs
+# only when BLEATR_LIVE=1 and HERDR_ENV=1 are both set; leaving them unset here
+# skips it, so no Herdr server is needed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is the target platform. Ubuntu covers the other side of the
+        # portability line bin/bleat is written to: mawk parsing config.toml,
+        # dash as the /bin/sh that runs say_command and summarize_command, and
+        # coreutils `timeout` instead of the background-watcher fallback.
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq when the runner lacks it
+        run: |
+          if ! command -v jq >/dev/null; then
+            if [ "$RUNNER_OS" = macOS ]; then
+              brew install jq
+            else
+              sudo apt-get update && sudo apt-get install -y jq
+            fi
+          fi
+
+      - name: Show the interpreters the suite will use
+        run: |
+          bash --version | head -n 1
+          jq --version
+          python3 --version
+
+      - name: Run the test suite
+        run: bash test/run.sh
