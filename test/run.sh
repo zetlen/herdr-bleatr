@@ -9,7 +9,6 @@
 set -uo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-REAL_HOME="$HOME"
 BLEAT="$ROOT/bin/bleat"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bleatr-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -142,16 +141,22 @@ else
 fi
 
 setup bell-tilde
-: >"$CASE_DIR/ding.wav"
-export HOME="$CASE_DIR"
-export BLEATR_BELL="~/ding.wav"
+# The sound file goes under the real HOME rather than HOME being pointed at
+# the case directory. Moving HOME breaks version-manager shims -- mise puts
+# its trust state under HOME, and its `jq` shim then writes nothing, which
+# leaves the event JSON empty and the case passing or failing for a reason
+# that has nothing to do with `~`.
+TILDE_DIR="$(mktemp -d "$HOME/.bleatr-test.XXXXXX")"
+: >"$TILDE_DIR/ding.wav"
+export BLEATR_BELL="~/${TILDE_DIR#"$HOME"/}/ding.wav"
 run_bleat done >/dev/null
-if [ "$(cat "$CASE_DIR/bell" 2>/dev/null)" = "$CASE_DIR/ding.wav" ]; then
+if [ "$(cat "$CASE_DIR/bell" 2>/dev/null)" = "$TILDE_DIR/ding.wav" ]; then
 	pass "a leading ~ in the bell path is expanded"
 else
-	fail "a leading ~ in the bell path is expanded" "$(cat "$CASE_DIR/stderr")"
+	fail "a leading ~ in the bell path is expanded" \
+		"bell: $(cat "$CASE_DIR/bell" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")"
 fi
-export HOME="$REAL_HOME"
+rm -rf "$TILDE_DIR"
 
 setup bell-settings-name
 if [ -f /System/Library/Sounds/Glass.aiff ]; then
