@@ -141,3 +141,7 @@ test/run.sh
 They use fake `say`, bell, and summarizer commands, so no audio plays and no
 model is billed. The last case needs a live Herdr session and drives a scratch
 pane in the current workspace.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
