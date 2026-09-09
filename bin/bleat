@@ -616,6 +616,12 @@ in_focused_tab() {
 # Integrations can flap a status within a second or two; one bleat per pane
 # and status inside the cooldown window is plenty.
 in_cooldown() {
+	# Stamps are only ever added, one per pane and status, so day-old ones are
+	# swept off here. Best-effort by design: a find that fails, or is not
+	# there at all, must never cost a notification. Only `last.*` files at the
+	# top of the dir are eligible, which leaves `muted`, `intro-seen`,
+	# `summarize.err`, and everything under the speech lock alone.
+	find "$STATE_DIR" -maxdepth 1 -name 'last.*' -type f -mtime +1 -delete 2>/dev/null || true
 	[ "$COOLDOWN_SECONDS" -gt 0 ] 2>/dev/null || return 1
 	local key stamp now
 	key="$(printf '%s-%s' "$EV_PANE" "$EV_STATUS" | tr -c 'A-Za-z0-9_-' '_')"

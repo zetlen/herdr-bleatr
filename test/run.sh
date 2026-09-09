@@ -222,6 +222,48 @@ else
 	fail "a repeat within the cooldown is skipped, a different status is not" "$(said)"
 fi
 
+setup stale-stamps
+# in_cooldown leaves a stamp per pane and status behind and sweeps day-old
+# ones on its way in. The run below is inside the cooldown -- a current stamp
+# for its own pane and status is planted first -- so it sweeps and returns
+# before the speech lock is taken, which is what lets the lock directory sit
+# here as a decoy. `muted` is not one of the decoys: a mute file would stop
+# the run before the cooldown check. The same name filter protects it as
+# protects `intro-seen`.
+mkdir -p "$CASE_DIR/state/speaking.lock"
+date +%s >"$CASE_DIR/state/last.w1_p1-done"
+: >"$CASE_DIR/state/last.w1_p9-blocked"
+: >"$CASE_DIR/state/intro-seen"
+: >"$CASE_DIR/state/summarize.err"
+: >"$CASE_DIR/state/speaking.lock/last.inner"
+touch -t 202001010000 "$CASE_DIR/state/last.w1_p9-blocked" "$CASE_DIR/state/intro-seen" \
+	"$CASE_DIR/state/summarize.err" "$CASE_DIR/state/speaking.lock/last.inner"
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/state/last.w1_p9-blocked" ] && [ -e "$CASE_DIR/state/last.w1_p1-done" ]; then
+	pass "a day-old cooldown stamp is swept and a current one is kept"
+else
+	fail "a day-old cooldown stamp is swept and a current one is kept" "$(ls "$CASE_DIR/state")"
+fi
+if [ -e "$CASE_DIR/state/intro-seen" ] && [ -e "$CASE_DIR/state/summarize.err" ] &&
+	[ -e "$CASE_DIR/state/speaking.lock/last.inner" ]; then
+	pass "the sweep leaves the state files and the speech lock alone"
+else
+	fail "the sweep leaves the state files and the speech lock alone" "$(find "$CASE_DIR/state")"
+fi
+
+setup sweep-best-effort
+# The sweep is housekeeping: a find that fails, or is not on the machine at
+# all, must not cost a notification.
+mkdir -p "$CASE_DIR/bin"
+printf '#!/bin/sh\nexit 3\n' >"$CASE_DIR/bin/find"
+chmod +x "$CASE_DIR/bin/find"
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; then
+	pass "a failing sweep still speaks"
+else
+	fail "a failing sweep still speaks" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
 setup mute
 bash "$BLEAT" mute 2>/dev/null
 run_bleat done >/dev/null
