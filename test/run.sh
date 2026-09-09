@@ -37,8 +37,8 @@ setup() {
 	export HERDR_PLUGIN_CONTEXT_JSON='{"workspace_id":"w1","workspace_label":"herdr-bleatr","tab_label":"1"}'
 }
 
-event() { # status [agent]
-	jq -cn --arg s "$1" --arg a "${2:-claude}" \
+event() { # status [agent]; an empty agent stays empty, as Herdr sends it
+	jq -cn --arg s "$1" --arg a "${2-claude}" \
 		'{event:"pane_agent_status_changed",data:{type:"pane_agent_status_changed",pane_id:"w1:p1",workspace_id:"w1",agent_status:$s,agent:$a}}'
 }
 
@@ -78,7 +78,7 @@ if [ "$(said)" = "Claude finished the plugin." ]; then
 else
 	fail "summarizer output is collapsed to one clean line" "$(said)"
 fi
-if grep -q '^Event: done' "$CASE_DIR/prompt" && grep -q '^Agent: claude' "$CASE_DIR/prompt" &&
+if grep -q '^Event: done' "$CASE_DIR/prompt" && grep -q '^Agent: Claude' "$CASE_DIR/prompt" && grep -q '^"Claude in herdr-bleatr"' "$CASE_DIR/prompt" &&
 	grep -q '^Workspace: herdr-bleatr' "$CASE_DIR/prompt" && grep -q '^Tab: 1' "$CASE_DIR/prompt" &&
 	grep -q 'No terminal output' "$CASE_DIR/prompt"; then
 	pass "prompt file carries event, agent, workspace, and tab"
@@ -140,6 +140,38 @@ if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && 
 	pass "a failing summarizer falls back to the template and logs stderr"
 else
 	fail "a failing summarizer falls back to the template and logs stderr" "$(said)" "$(cat "$CASE_DIR/state/summarize.err" 2>/dev/null)"
+fi
+
+setup unrecognized-agent
+# Herdr sends an empty agent for a program it has no detection profile for.
+# The prompt must still tell the summarizer what to call it, and the fallback
+# must not say "Agent in".
+export BLEATR_SUMMARIZE_COMMAND="cp \"\$BLEATR_PROMPT_FILE\" \"$CASE_DIR/prompt\"; exit 1"
+run_bleat done "" >/dev/null
+if [ "$(said)" = "Your agent in herdr-bleatr finished and is waiting for you." ] &&
+	grep -q '^Agent: Your agent' "$CASE_DIR/prompt" && grep -q '"Your agent in herdr-bleatr"' "$CASE_DIR/prompt"; then
+	pass "an unrecognized agent is called Your agent in the prompt and the fallback"
+else
+	fail "an unrecognized agent is called Your agent in the prompt and the fallback" "$(said)" "$(grep -n 'agent in' "$CASE_DIR/prompt")"
+fi
+
+setup omp-agent
+export BLEATR_SUMMARIZE_COMMAND="cp \"\$BLEATR_PROMPT_FILE\" \"$CASE_DIR/prompt\"; exit 1"
+run_bleat done omp >/dev/null
+if [ "$(said)" = "OMP in herdr-bleatr finished and is waiting for you." ] && grep -q '^Agent: OMP' "$CASE_DIR/prompt"; then
+	pass "the omp integration's lowercase id is spoken as OMP"
+else
+	fail "the omp integration's lowercase id is spoken as OMP" "$(said)"
+fi
+
+setup pi-agent
+export BLEATR_SUMMARIZE_COMMAND="cp \"\$BLEATR_PROMPT_FILE\" \"$CASE_DIR/prompt\"; exit 1"
+run_bleat done pi >/dev/null
+if [ "$(said)" = "Pi in herdr-bleatr finished and is waiting for you." ] &&
+	grep -q '^The agent is called Pi\.' "$CASE_DIR/prompt" && grep -q '"Pi in herdr-bleatr"' "$CASE_DIR/prompt"; then
+	pass "the prompt names the reported agent, not one from the examples"
+else
+	fail "the prompt names the reported agent, not one from the examples" "$(said)" "$(grep -n 'Pi' "$CASE_DIR/prompt")"
 fi
 
 setup summarizer-hangs
