@@ -154,6 +154,64 @@ else
 	fail "a hanging summarizer is cut off at the timeout" "said: $(said)" "elapsed: ${elapsed}s"
 fi
 
+setup max-words
+# The prompt asks for at most max_words words; a model that runs on regardless
+# is cut back to them, and only between words.
+export BLEATR_MAX_WORDS=6
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr finished the plugin tests and wants you to review the README.\n'"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished the plugin" ]; then
+	pass "a long summary is cut to max_words whole words"
+else
+	fail "a long summary is cut to max_words whole words" "$(said)"
+fi
+
+setup max-words-inside-budget
+export BLEATR_MAX_WORDS=25
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr fixed the parser and stopped.\n'"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr fixed the parser and stopped." ]; then
+	pass "a summary inside the budget is spoken whole"
+else
+	fail "a summary inside the budget is spoken whole" "$(said)"
+fi
+
+setup max-words-not-a-number
+# A hand-edited config can put anything in max_words.
+export BLEATR_MAX_WORDS=lots
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr fixed the parser and stopped.\n'"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr fixed the parser and stopped." ]; then
+	pass "a non-numeric max_words caps nothing"
+else
+	fail "a non-numeric max_words caps nothing" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup max-words-template
+# The cap is the summarizer's. The template sentence is already short and
+# keeps its ending however small max_words is.
+export BLEATR_MAX_WORDS=3
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; then
+	pass "max_words does not cut the template sentence"
+else
+	fail "max_words does not cut the template sentence" "$(said)"
+fi
+
+setup speech-length-backstop
+# Behind max_words, sanitize_speech stops a sentence at about 400 characters.
+# That stop lands between words too: every word here is the same token, so a
+# cut inside one shows up as a short last word.
+export BLEATR_MAX_WORDS=9999
+export BLEATR_SUMMARIZE_COMMAND="yes hedgehog | head -n 100 | tr '\\n' ' '"
+run_bleat done >/dev/null
+spoken="$(said)"
+if [ "${#spoken}" -le 401 ] && [ "${spoken##* }" = hedgehog ]; then
+	pass "an overlong sentence is stopped at a word boundary"
+else
+	fail "an overlong sentence is stopped at a word boundary" "length ${#spoken}, last word ${spoken##* }"
+fi
+
 setup cooldown
 run_bleat done >/dev/null
 run_bleat done >/dev/null

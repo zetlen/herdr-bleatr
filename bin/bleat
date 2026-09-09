@@ -275,7 +275,17 @@ sanitize_speech() { # stdin -> one clean line, safe to hand to a shell
 		sed -e "s/'//g" -e 's/[][$`\";&|<>(){}*#]/ /g' \
 			-e 's/[[:space:]][[:space:]]*/ /g' \
 			-e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
-		cut -c1-400
+		# A backstop on length, taken one character past the limit and then
+		# dropped back to the last space, so it never lands inside a word.
+		awk '{ if (length($0) > 400) { $0 = substr($0, 1, 401); sub(/ [^ ]*$/, "", $0) } print }'
+}
+
+# The prompt asks the model for at most $MAX_WORDS words and nothing holds it
+# to that; a paragraph it decides to write is half a minute of talking. Only
+# whole words are kept, since half a word is worse than a short sentence, and
+# a max_words that is not a positive number caps nothing rather than failing.
+cap_words() { # count; stdin -> the same line, at most `count` words of it
+	awk -v max="$1" '{ if (max ~ /^[0-9]+$/ && max > 0 && NF > max) NF = max; print }'
 }
 
 titlecase() {
@@ -453,7 +463,10 @@ summarize() { # -> sentence on stdout (fallback sentence on any failure)
 	local out
 	BLEATR_PROMPT_FILE="$prompt_file" run_with_timeout "$SUMMARY_TIMEOUT" sh -c "$cmd" \
 		<"$prompt_file" >"$prompt_file.reply" 2>>"$STATE_DIR/summarize.err"
-	out="$(sanitize_speech <"$prompt_file.reply")"
+	# The word cap goes here rather than in sanitize_speech, which the
+	# fallback sentence also runs through: that one is already short and has
+	# to keep its ending.
+	out="$(sanitize_speech <"$prompt_file.reply" | cap_words "$MAX_WORDS")"
 	[ -n "${BLEATR_DEBUG:-}" ] || rm -f "$prompt_file" "$prompt_file.out" "$prompt_file.reply"
 	if [ -n "$out" ]; then
 		printf '%s' "$out"
