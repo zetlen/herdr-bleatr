@@ -140,6 +140,19 @@ else
 	fail "the bell plays before speech" "$(cat "$CASE_DIR/order" 2>/dev/null | tr '\n' ' ')"
 fi
 
+setup bell-settings-name
+if [ -f /System/Library/Sounds/Glass.aiff ]; then
+	export BLEATR_BELL="Crystal"
+	run_bleat done >/dev/null
+	if [ "$(cat "$CASE_DIR/bell" 2>/dev/null)" = "/System/Library/Sounds/Glass.aiff" ]; then
+		pass "a System Settings alert name resolves to its sound file"
+	else
+		fail "a System Settings alert name resolves to its sound file" "$(cat "$CASE_DIR/stderr")"
+	fi
+else
+	printf 'skip a System Settings alert name resolves to its sound file: not macOS\n'
+fi
+
 setup bell-missing
 export BLEATR_BELL="NoSuchSound"
 run_bleat done >/dev/null

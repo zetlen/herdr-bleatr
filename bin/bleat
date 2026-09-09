@@ -378,7 +378,29 @@ summarize() { # -> sentence on stdout (fallback sentence on any failure)
 
 # ------------------------------------------------------------------ sound ---
 
-# `bell` is false, a macOS system sound name such as "Glass", or a file path.
+# `bell` is false, a macOS alert sound name, or a file path. System Settings
+# lists the alert sounds under names that differ from the files in
+# /System/Library/Sounds, so both spellings are accepted.
+bell_alias() { # Settings name -> file base name
+	case "$1" in
+	Mezzo) echo Basso ;;
+	Breeze) echo Blow ;;
+	Pebble) echo Bottle ;;
+	Jump) echo Frog ;;
+	Funky) echo Funk ;;
+	Crystal) echo Glass ;;
+	Heroine) echo Hero ;;
+	Pong) echo Morse ;;
+	Sonar) echo Ping ;;
+	Bubble) echo Pop ;;
+	Pluck) echo Purr ;;
+	Sonumi) echo Sosumi ;;
+	Submerge) echo Submarine ;;
+	Boop) echo Tink ;;
+	*) echo "$1" ;;
+	esac
+}
+
 bell_file() {
 	case "$BELL" in
 	false | no | off | 0 | "") return 1 ;;
@@ -387,13 +409,15 @@ bell_file() {
 		printf '%s' "$BELL"
 		return 0
 	fi
-	local dir
-	for dir in "$HOME/Library/Sounds" /System/Library/Sounds /Library/Sounds /usr/share/sounds/freedesktop/stereo; do
-		for ext in "" .aiff .aif .wav .oga .mp3; do
-			if [ -f "$dir/$BELL$ext" ]; then
-				printf '%s' "$dir/$BELL$ext"
-				return 0
-			fi
+	local dir name
+	for name in "$BELL" "$(bell_alias "$BELL")"; do
+		for dir in "$HOME/Library/Sounds" /System/Library/Sounds /Library/Sounds /usr/share/sounds/freedesktop/stereo; do
+			for ext in "" .aiff .aif .wav .oga .mp3; do
+				if [ -f "$dir/$name$ext" ]; then
+					printf '%s' "$dir/$name$ext"
+					return 0
+				fi
+			done
 		done
 	done
 	log "bell sound '$BELL' not found"
