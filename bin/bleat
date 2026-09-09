@@ -26,10 +26,6 @@ CONFIG_DIR="${HERDR_PLUGIN_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/p
 STATE_DIR="${HERDR_PLUGIN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/bleatr}"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 HERDR="${HERDR_BIN_PATH:-herdr}"
-# A version-manager shim on PATH can add ~40 ms to every jq start; the system
-# binary is used when there is one.
-JQ=/usr/bin/jq
-[ -x "$JQ" ] || JQ=jq
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
 log() { printf 'bleat: %s\n' "$*" >&2; }
@@ -229,9 +225,9 @@ gather() {
 	local event="${HERDR_PLUGIN_EVENT_JSON:-{\}}" context="${HERDR_PLUGIN_CONTEXT_JSON:-{\}}"
 	EV_STATUS="" EV_PANE="" EV_AGENT="" EV_TITLE="" CTX_WORKSPACE="" CTX_TAB=""
 	local workspace_id=""
-	eval "$(printf '%s' "$event" | "$JQ" -r '.data // {} |
+	eval "$(printf '%s' "$event" | jq -r '.data // {} |
 		"EV_STATUS=\(.agent_status // "" | @sh) EV_PANE=\(.pane_id // "" | @sh) EV_AGENT=\(.display_agent // .agent // "" | @sh) EV_TITLE=\(.title // "" | @sh) workspace_id=\(.workspace_id // "" | @sh)"' 2>/dev/null)"
-	eval "$(printf '%s' "$context" | "$JQ" -r '
+	eval "$(printf '%s' "$context" | jq -r '
 		"CTX_WORKSPACE=\(.workspace_label // .workspace_id // "" | @sh) CTX_TAB=\(.tab_label // "" | @sh)"' 2>/dev/null)"
 	[ -n "$EV_PANE" ] || EV_PANE="${HERDR_PANE_ID:-}"
 	[ -n "$workspace_id" ] || workspace_id="${HERDR_WORKSPACE_ID:-}"
@@ -246,13 +242,13 @@ gather_pane() {
 	if [ -n "$EV_PANE" ] && [ -z "${BLEATR_SKIP_HERDR:-}" ]; then
 		# Hooks get workspace_label in their context; a shell run does not.
 		if [ -z "$CTX_WORKSPACE" ] && [ -n "$EV_WORKSPACE_ID" ]; then
-			CTX_WORKSPACE="$("$HERDR" workspace get "$EV_WORKSPACE_ID" 2>/dev/null | "$JQ" -r '.result.workspace.label // empty')"
+			CTX_WORKSPACE="$("$HERDR" workspace get "$EV_WORKSPACE_ID" 2>/dev/null | jq -r '.result.workspace.label // empty')"
 		fi
 		local info
 		info="$("$HERDR" agent get "$EV_PANE" 2>/dev/null)" || info=""
 		if [ -n "$info" ]; then
 			local info_agent=""
-			eval "$(printf '%s' "$info" | "$JQ" -r '.result.agent // {} |
+			eval "$(printf '%s' "$info" | jq -r '.result.agent // {} |
 				"AGENT_NAME=\(.name // "" | @sh) AGENT_TITLE=\(.terminal_title_stripped // .title // "" | @sh) info_agent=\(.display_agent // .agent // "" | @sh)"' 2>/dev/null)"
 			[ -n "$EV_AGENT" ] || EV_AGENT="$info_agent"
 		fi
@@ -582,12 +578,12 @@ test_bleat() {
 	# bell, and the summarizer can be checked end to end. Cooldown is skipped.
 	local pane="${HERDR_PANE_ID:-}"
 	if [ -z "$pane" ]; then
-		pane="$("$HERDR" pane current 2>/dev/null | "$JQ" -r '.result.pane.pane_id // empty')"
+		pane="$("$HERDR" pane current 2>/dev/null | jq -r '.result.pane.pane_id // empty')"
 	fi
 	local agent
-	agent="$("$HERDR" agent get "$pane" 2>/dev/null | "$JQ" -r '.result.agent.display_agent // .result.agent.agent // empty')"
+	agent="$("$HERDR" agent get "$pane" 2>/dev/null | jq -r '.result.agent.display_agent // .result.agent.agent // empty')"
 	export HERDR_PLUGIN_EVENT_JSON
-	HERDR_PLUGIN_EVENT_JSON="$("$JQ" -n --arg p "$pane" --arg a "${agent:-test agent}" --arg s "${BLEATR_TEST_STATUS:-done}" \
+	HERDR_PLUGIN_EVENT_JSON="$(jq -n --arg p "$pane" --arg a "${agent:-test agent}" --arg s "${BLEATR_TEST_STATUS:-done}" \
 		'{event:"pane_agent_status_changed", data:{type:"pane_agent_status_changed", pane_id:$p, agent_status:$s, agent:$a}}')"
 	BLEATR_COOLDOWN_SECONDS=0 bleat
 }

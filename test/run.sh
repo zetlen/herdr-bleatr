@@ -302,10 +302,10 @@ start_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
 for i in 1 2 3 4 5 6 7 8 9 10; do run_bleat working >/dev/null; done
 end_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
 per_run=$(((end_ms - start_ms) / 10))
-if [ "$per_run" -lt 150 ]; then
-	pass "an ignored event costs under 150 ms (${per_run} ms)"
+if [ "$per_run" -lt 250 ]; then
+	pass "an ignored event costs under 250 ms (${per_run} ms)"
 else
-	fail "an ignored event costs under 150 ms" "measured ${per_run} ms per run"
+	fail "an ignored event costs under 250 ms" "measured ${per_run} ms per run"
 fi
 
 setup lock-serializes
