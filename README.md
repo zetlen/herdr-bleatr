@@ -124,6 +124,10 @@ Show each hook run, the sentence it spoke, and any errors:
 herdr plugin log list --plugin bleatr
 ```
 
+Only one notification is spoken at a time. An agent that finishes while Bleatr
+is still talking is dropped rather than queued, and the log shows it as
+`another bleat has the floor; dropping this one`.
+
 Summarizer stderr is appended to `summarize.err` in the plugin state
 directory, `~/.local/state/herdr/plugins/bleatr` by default.
 

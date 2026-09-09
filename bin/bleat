@@ -248,21 +248,53 @@ run_with_timeout() { # seconds cmd...
 }
 
 # Speech must not overlap: two agents finishing together would otherwise talk
-# over each other. A mkdir lock is atomic on every platform; a lock older than
-# the wait limit is treated as abandoned.
+# over each other. A mkdir lock is atomic on every platform. A bleat that finds
+# the lock held drops rather than queues behind it: a sentence waiting its turn
+# describes a pane the user has had a minute to read, and the per-pane cooldown
+# already keeps the dropped one from being a notification lost.
 SPEAK_LOCK="$STATE_DIR/speaking.lock"
-acquire_speech_lock() {
-	local waited=0
-	while ! mkdir "$SPEAK_LOCK" 2>/dev/null; do
-		if [ "$waited" -ge 90 ]; then
-			log "breaking stale speech lock"
-			rm -rf "$SPEAK_LOCK"
-			continue
-		fi
-		sleep 1
-		waited=$((waited + 1))
-	done
-	trap 'rm -rf "$SPEAK_LOCK"' EXIT
+
+claim_speech_lock() {
+	mkdir "$SPEAK_LOCK" 2>/dev/null || return 1
+	# The owner's pid is how the next bleat tells a lock in use from one left
+	# behind, and how the trap tells a lock still ours from one taken over.
+	printf '%s' "$$" >"$SPEAK_LOCK/pid"
+	trap release_speech_lock EXIT
+}
+
+release_speech_lock() {
+	[ "$(cat "$SPEAK_LOCK/pid" 2>/dev/null)" = "$$" ] || return 0
+	rm -rf "$SPEAK_LOCK"
+}
+
+# A bleat killed outright -- SIGKILL, a reboot -- never runs its EXIT trap, and
+# with nothing to break the lock it left behind every notification after it
+# would be dropped in silence. A dead owner hands the lock straight over; an
+# owner that is alive but wedged, or a pid that never landed in the lock, is
+# bounded by age instead, since speaking takes seconds and not minutes.
+speech_lock_abandoned() { # owner pid, may be empty
+	[ -n "$1" ] && ! kill -0 "$1" 2>/dev/null && return 0
+	[ -n "$(find "$SPEAK_LOCK" -maxdepth 0 -mmin +2 2>/dev/null)" ]
+}
+
+acquire_speech_lock() { # 0: the floor is ours, 1: someone else is speaking
+	claim_speech_lock && return 0
+	local owner
+	owner="$(cat "$SPEAK_LOCK/pid" 2>/dev/null)"
+	speech_lock_abandoned "$owner" || return 1
+	# Two bleats can find the same lock abandoned at once, so the handover goes
+	# through a rename: only one of them can move the directory aside, and a lock
+	# that changed hands in between is put back rather than taken from its new
+	# owner.
+	local stale="$SPEAK_LOCK.stale.$$"
+	mv "$SPEAK_LOCK" "$stale" 2>/dev/null || return 1
+	if [ "$(cat "$stale/pid" 2>/dev/null)" != "$owner" ]; then
+		mv "$stale" "$SPEAK_LOCK" 2>/dev/null || rm -rf "$stale"
+		return 1
+	fi
+	rm -rf "$stale"
+	log "taking over a speech lock left behind by pid ${owner:-unknown}"
+	claim_speech_lock
 }
 
 sanitize_speech() { # stdin -> one clean line, safe to hand to a shell
@@ -601,14 +633,49 @@ speak() { # sentence
 
 # Herdr shows no popup for the tab the user is looking at, and neither does
 # this plugin. The hook's context names the event pane's tab; only the
-# session snapshot names the focused one. Anything unknown counts as not
-# focused, so a failed lookup still speaks.
+# session snapshot names the focused one, and the same snapshot says whether
+# the event's pane is still open. One jq pass reads both into SNAP_*.
+read_snapshot() {
+	SNAP_FOCUSED_TAB="" SNAP_PANES=0 SNAP_PANE_LIVE=0
+	[ -z "${BLEATR_SKIP_HERDR:-}" ] || return 1
+	local snapshot
+	snapshot="$("$HERDR" api snapshot 2>/dev/null)"
+	[ -n "$snapshot" ] || return 1
+	eval "$(printf '%s' "$snapshot" | jq -r --arg pane "$EV_PANE" '.result.snapshot // {} |
+		"SNAP_FOCUSED_TAB=\(.focused_tab_id // "" | @sh) SNAP_PANES=\(.panes // [] | length) SNAP_PANE_LIVE=\([.panes[]? | select(.pane_id == $pane)] | length)"' 2>/dev/null)"
+}
+
+# Anything unknown counts as not focused, so a failed lookup still speaks.
 in_focused_tab() {
 	[ -n "$CTX_TAB_ID" ] || return 1
-	[ -z "${BLEATR_SKIP_HERDR:-}" ] || return 1
-	local focused
-	focused="$("$HERDR" api snapshot 2>/dev/null | jq -r '.result.snapshot.focused_tab_id // empty' 2>/dev/null)"
-	[ -n "$focused" ] && [ "$focused" = "$CTX_TAB_ID" ]
+	read_snapshot || return 1
+	[ -n "$SNAP_FOCUSED_TAB" ] && [ "$SNAP_FOCUSED_TAB" = "$CTX_TAB_ID" ]
+}
+
+# The gate at the top of bleat() is old news by the time there is a sentence to
+# say: summarizing takes seconds, and the lock can be someone else's for longer
+# still. In that time the user may have hit mute, switched to the pane's tab,
+# or closed the pane, and speaking anyway is how a plugin like this one gets
+# muted for good. Asked again here, out of one snapshot -- a second herdr
+# round-trip just before speaking would cost more than it could tell us.
+# SPEAK_FOCUSED_TAB excuses `bleat test` from the tab check, as it does above.
+still_worth_speaking() {
+	if is_muted; then
+		debug "muted while the sentence was being prepared"
+		return 1
+	fi
+	read_snapshot || return 0
+	if [ -z "${SPEAK_FOCUSED_TAB:-}" ] && [ -n "$CTX_TAB_ID" ] && [ "$SNAP_FOCUSED_TAB" = "$CTX_TAB_ID" ]; then
+		debug "tab $CTX_TAB_ID is focused now; pane $EV_PANE is in view"
+		return 1
+	fi
+	# A snapshot listing no panes at all -- an older Herdr, a half-answered call
+	# -- says nothing about this one; only a list without it means the pane went.
+	if [ -n "$EV_PANE" ] && [ "$SNAP_PANES" -gt 0 ] && [ "$SNAP_PANE_LIVE" -eq 0 ]; then
+		debug "pane $EV_PANE is gone"
+		return 1
+	fi
+	return 0
 }
 
 # --------------------------------------------------------------- cooldown ---
@@ -677,7 +744,11 @@ bleat() {
 	debug "sentence: $sentence"
 	printf '%s\n' "$sentence"
 
-	acquire_speech_lock
+	if ! acquire_speech_lock; then
+		log "another bleat has the floor; dropping this one"
+		return 0
+	fi
+	still_worth_speaking || return 0
 	play_bell "$sentence"
 	speak "$sentence"
 }

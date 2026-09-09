@@ -315,6 +315,88 @@ else
 fi
 unset HERDR_BIN_PATH
 
+setup mute-mid-flight
+# The gates at the top of bleat() are old news by the time there is a sentence
+# to say. A mute pressed while the model was writing still has to land, and
+# without a bell either.
+export BLEATR_BELL="$CASE_DIR/ding.wav"
+: >"$CASE_DIR/ding.wav"
+export BLEATR_SUMMARIZE_COMMAND=": > \"$CASE_DIR/state/muted\"; printf 'Claude finished the tests.\n'"
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/said" ] && [ ! -e "$CASE_DIR/bell" ]; then
+	pass "a mute during the summary suppresses the sentence"
+else
+	fail "a mute during the summary suppresses the sentence" "$(said)" "$(cat "$CASE_DIR/bell" 2>/dev/null)"
+fi
+
+setup focus-mid-flight
+# The other half of it: the user switches into the pane's tab while the model
+# writes, and by the time the sentence is ready they are reading the pane. The
+# fake herdr answers from a file the summarizer rewrites, which is the switch.
+unset BLEATR_SKIP_HERDR
+cat >"$CASE_DIR/herdr" <<FAKE
+#!/bin/sh
+case "\$1 \$2" in
+"api snapshot") printf '{"result":{"snapshot":{"focused_tab_id":"%s"}}}\n' "\$(cat "$CASE_DIR/focused")" ;;
+*) exit 1 ;;
+esac
+FAKE
+chmod +x "$CASE_DIR/herdr"
+export HERDR_BIN_PATH="$CASE_DIR/herdr"
+export HERDR_PLUGIN_CONTEXT_JSON='{"workspace_id":"w1","workspace_label":"herdr-bleatr","tab_id":"w1:t1","tab_label":"1"}'
+printf 'w1:t2\n' >"$CASE_DIR/focused"
+export BLEATR_SUMMARIZE_COMMAND="printf 'w1:t1\n' >\"$CASE_DIR/focused\"; printf 'Claude finished the tests.\n'"
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/said" ]; then
+	pass "switching into the pane's tab during the summary suppresses the sentence"
+else
+	fail "switching into the pane's tab during the summary suppresses the sentence" "$(said)"
+fi
+# The same run with the user still elsewhere speaks, so it was the switch that
+# silenced the one above and not the fake.
+printf 'w1:t2\n' >"$CASE_DIR/focused"
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude finished the tests.\n'"
+BLEATR_COOLDOWN_SECONDS=0 run_bleat done >/dev/null
+if [ "$(said)" = "Claude finished the tests." ]; then
+	pass "a pane whose tab stays in the background is spoken"
+else
+	fail "a pane whose tab stays in the background is spoken" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+unset HERDR_BIN_PATH
+
+setup pane-closed
+# The snapshot read just before speaking also says whether the pane is still
+# open; one closed while the model wrote has nobody left to tell. A snapshot
+# that lists no panes at all knows nothing about this one, which is why the
+# fake herdr in the cases above -- it answers with a focused tab and nothing
+# else -- still speaks.
+unset BLEATR_SKIP_HERDR
+cat >"$CASE_DIR/herdr" <<FAKE
+#!/bin/sh
+case "\$1 \$2" in
+"api snapshot") cat "$CASE_DIR/snapshot" ;;
+*) exit 1 ;;
+esac
+FAKE
+chmod +x "$CASE_DIR/herdr"
+export HERDR_BIN_PATH="$CASE_DIR/herdr"
+printf '{"result":{"snapshot":{"focused_tab_id":"w1:t2","panes":[{"pane_id":"w1:p1"}]}}}\n' >"$CASE_DIR/snapshot"
+run_bleat done >/dev/null
+if [ -e "$CASE_DIR/said" ]; then
+	pass "a pane the snapshot still lists is spoken"
+else
+	fail "a pane the snapshot still lists is spoken" "$(cat "$CASE_DIR/stderr")"
+fi
+rm -f "$CASE_DIR/said"
+printf '{"result":{"snapshot":{"focused_tab_id":"w1:t2","panes":[{"pane_id":"w1:p9"}]}}}\n' >"$CASE_DIR/snapshot"
+BLEATR_COOLDOWN_SECONDS=0 run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/said" ]; then
+	pass "a pane closed while the summary was written is not spoken"
+else
+	fail "a pane closed while the summary was written is not spoken" "$(said)"
+fi
+unset HERDR_BIN_PATH
+
 setup bell-order
 export BLEATR_BELL="$CASE_DIR/ding.wav"
 : >"$CASE_DIR/ding.wav"
@@ -568,16 +650,90 @@ else
 	fail "an ignored event costs under $budget ms" "measured ${per_run} ms per run"
 fi
 
-setup lock-serializes
-export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 1; printf 'end\n' >> \"$CASE_DIR/order\""
+setup lock-drops
+# Speech still never overlaps, but the bleat that cannot have the floor drops
+# instead of queueing behind it: a sentence that waited its turn describes a
+# pane the user has already read. The second run starts once the first is
+# inside `say`, so it always meets a held lock.
+export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 1; printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"; printf 'end\n' >> \"$CASE_DIR/order\""
 export BLEATR_COOLDOWN_SECONDS=0
 run_bleat done >/dev/null &
-run_bleat blocked >/dev/null &
-wait
-if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start end start end " ]; then
+first=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -s "$CASE_DIR/order" ] && break
+	sleep 0.2
+done
+run_bleat blocked >/dev/null
+wait "$first"
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start end " ]; then
 	pass "concurrent bleats do not overlap"
 else
 	fail "concurrent bleats do not overlap" "$(cat "$CASE_DIR/order" | tr '\n' ' ')"
+fi
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && grep -q dropping "$CASE_DIR/stderr"; then
+	pass "the second bleat is dropped and logged, and the first is unharmed"
+else
+	fail "the second bleat is dropped and logged, and the first is unharmed" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup lock-abandoned
+# A bleat killed outright never runs its EXIT trap, and the lock it leaves must
+# not silence every notification after it. The pid inside names a process that
+# is gone, so the next bleat takes the lock over -- and gives it back.
+mkdir -p "$CASE_DIR/state/speaking.lock"
+sh -c 'printf %s $$' >"$CASE_DIR/state/speaking.lock/pid"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && [ ! -e "$CASE_DIR/state/speaking.lock" ]; then
+	pass "a lock left behind by a dead bleat is taken over and released"
+else
+	fail "a lock left behind by a dead bleat is taken over and released" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup lock-handover
+# Once a lock has changed hands, the bleat that used to own it must not take
+# the new owner's lock down with it on the way out -- a third bleat would then
+# start talking over the second. A waits inside `say` holding the lock; its
+# lock is aged so that B takes it over and holds it in turn; A is then let go,
+# and C, arriving while B is still speaking, has to find B's lock and drop.
+export BLEATR_NOTIFY_ON="done blocked idle"
+BLEATR_SAY_COMMAND="printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"; : > \"$CASE_DIR/a-up\"; while [ ! -e \"$CASE_DIR/a-go\" ]; do sleep 0.1; done" \
+	run_bleat done >/dev/null &
+a=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -e "$CASE_DIR/a-up" ] && break
+	sleep 0.2
+done
+touch -t 202001010000 "$CASE_DIR/state/speaking.lock"
+BLEATR_SAY_COMMAND="printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"; : > \"$CASE_DIR/b-up\"; while [ ! -e \"$CASE_DIR/b-go\" ]; do sleep 0.1; done" \
+	run_bleat blocked >/dev/null &
+b=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -e "$CASE_DIR/b-up" ] && break
+	sleep 0.2
+done
+: >"$CASE_DIR/a-go"
+wait "$a"
+run_bleat idle >/dev/null
+: >"$CASE_DIR/b-go"
+wait "$b"
+if ! said | grep -q 'is idle'; then
+	pass "a bleat whose lock was taken over leaves the new owner's alone"
+else
+	fail "a bleat whose lock was taken over leaves the new owner's alone" "$(said)"
+fi
+
+setup lock-stale
+# The pid can outlive the bleat that wrote it -- wedged, or handed to something
+# else after a reboot -- and a lock can exist for an instant before the pid is
+# in it. Age is the backstop: nothing this plugin says takes minutes.
+mkdir -p "$CASE_DIR/state/speaking.lock"
+printf '%s' "$$" >"$CASE_DIR/state/speaking.lock/pid"
+touch -t 202001010000 "$CASE_DIR/state/speaking.lock"
+run_bleat done >/dev/null
+if [ -e "$CASE_DIR/said" ]; then
+	pass "a lock older than any sentence is taken over"
+else
+	fail "a lock older than any sentence is taken over" "$(cat "$CASE_DIR/stderr")"
 fi
 
 # --- live case ---------------------------------------------------------------
