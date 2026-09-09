@@ -415,9 +415,12 @@ summarize_command_for() { # preset -> command string, or empty for none
 			"${MODEL_ID:-haiku}"
 		;;
 	codex)
-		# `codex exec` reads the prompt from stdin when the prompt argument is `-`.
-		printf 'codex exec --skip-git-repo-check --sandbox read-only --color never --model %s -c model_reasoning_effort=low --output-last-message "$BLEATR_PROMPT_FILE.out" - < "$BLEATR_PROMPT_FILE" >/dev/null 2>&1 && cat "$BLEATR_PROMPT_FILE.out"' \
-			"${MODEL_ID:-gpt-5.1-codex-mini}"
+		# `codex exec` reads the prompt from stdin when none is given as an
+		# argument. Its stdout is progress chatter; the answer lands in the
+		# --output-last-message file. Web search and hooks are off: a
+		# one-sentence answer needs neither.
+		printf 'codex exec --model %s --skip-git-repo-check -c model_reasoning_effort=low -c web_search=disabled --disable hooks --sandbox=read-only --color never --output-last-message "$BLEATR_PROMPT_FILE.out" < "$BLEATR_PROMPT_FILE" >/dev/null 2>&1 && cat "$BLEATR_PROMPT_FILE.out"' \
+			"${MODEL_ID:-gpt-5.6-luna}"
 		;;
 	none | off | false | "") printf '' ;;
 	*)

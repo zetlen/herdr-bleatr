@@ -91,6 +91,48 @@ else
 	fail "prompt is also delivered on stdin"
 fi
 
+setup codex-preset
+# The codex preset's invocation was checked by hand against a real Codex CLI;
+# a fake `codex` records what it is given so that shape stays put. Only the
+# --output-last-message file may reach the spoken sentence: `codex exec`
+# chatters on stdout while it works.
+mkdir -p "$CASE_DIR/bin"
+cat >"$CASE_DIR/bin/codex" <<FAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CASE_DIR/codex-args"
+cat > "$CASE_DIR/codex-stdin"
+while [ \$# -gt 0 ]; do
+	[ "\$1" = --output-last-message ] && printf 'Codex fixed the failing test.\n' > "\$2"
+	shift
+done
+echo 'thinking...'
+FAKE
+chmod +x "$CASE_DIR/bin/codex"
+export BLEATR_SUMMARY_MODEL=codex
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+case "$(cat "$CASE_DIR/codex-args" 2>/dev/null)" in
+"exec --model gpt-5.6-luna --skip-git-repo-check -c model_reasoning_effort=low -c web_search=disabled --disable hooks --sandbox=read-only --color never --output-last-message "*.out)
+	pass "the codex preset runs the verified codex exec invocation" ;;
+*)
+	fail "the codex preset runs the verified codex exec invocation" "$(cat "$CASE_DIR/codex-args" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")" ;;
+esac
+if [ "$(said)" = "Codex fixed the failing test." ]; then
+	pass "the codex preset speaks the last message, not codex's stdout"
+else
+	fail "the codex preset speaks the last message, not codex's stdout" "$(said)"
+fi
+if grep -q '^Event: done' "$CASE_DIR/codex-stdin" 2>/dev/null; then
+	pass "the codex preset delivers the prompt on stdin"
+else
+	fail "the codex preset delivers the prompt on stdin" "$(cat "$CASE_DIR/codex-stdin" 2>/dev/null | head -n 3)"
+fi
+rm -f "$CASE_DIR/codex-args" "$CASE_DIR/said"
+PATH="$CASE_DIR/bin:$PATH" BLEATR_MODEL_ID=gpt-5.6-sol BLEATR_COOLDOWN_SECONDS=0 run_bleat done >/dev/null
+case "$(cat "$CASE_DIR/codex-args" 2>/dev/null)" in
+"exec --model gpt-5.6-sol "*) pass "model_id overrides the codex preset's model" ;;
+*) fail "model_id overrides the codex preset's model" "$(cat "$CASE_DIR/codex-args" 2>/dev/null)" ;;
+esac
+
 setup summarizer-fails
 export BLEATR_SUMMARIZE_COMMAND="echo boom >&2; exit 1"
 run_bleat done >/dev/null
