@@ -1,0 +1,27 @@
+id = "bleatr"
+name = "Herdr Bleatr"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Speaks agent notifications aloud with macOS `say`: a small LLM turns the agent's last message into one spoken sentence"
+platforms = ["macos", "linux"]
+
+# Herdr has no "notification" event. Its toasts and sounds fire when an agent
+# in a background workspace reaches `done`, or any agent reaches `blocked`.
+# The hook receives every status change and exits early for the rest.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "bin/bleat"]
+
+[[actions]]
+id = "test"
+title = "Bleatr: speak a test notification"
+description = "Run the whole pipeline (summarizer, bell, say) for the current pane"
+contexts = ["global"]
+command = ["bash", "bin/bleat", "test"]
+
+[[actions]]
+id = "toggle"
+title = "Bleatr: mute / unmute"
+description = "Toggle speech without disabling the plugin"
+contexts = ["global"]
+command = ["bash", "bin/bleat", "toggle"]

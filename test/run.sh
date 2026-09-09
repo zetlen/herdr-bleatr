@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Tests for bin/bleat. Speech, bell, and summarizer are replaced with commands
+# that record what they were given, so nothing plays audio or bills a model.
+#
+# Unit cases run without Herdr. The live case needs a Herdr session with this
+# plugin linked and runs only with BLEATR_LIVE=1: it swaps in a test config
+# (restoring yours afterwards), drives a scratch pane through a real status
+# change, and checks the plugin log.
+set -uo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+BLEAT="$ROOT/bin/bleat"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/bleatr-test.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+PASS=0
+FAIL=0
+pass() { PASS=$((PASS + 1)); printf 'ok   %s\n' "$1"; }
+fail() {
+	FAIL=$((FAIL + 1))
+	printf 'FAIL %s\n' "$1"
+	[ $# -gt 1 ] && printf '     %s\n' "${@:2}"
+}
+
+# Fresh config/state dirs per case, plus the fake say/bell/summarizer.
+setup() {
+	CASE_DIR="$WORK/$1"
+	mkdir -p "$CASE_DIR/config" "$CASE_DIR/state"
+	export HERDR_PLUGIN_CONFIG_DIR="$CASE_DIR/config"
+	export HERDR_PLUGIN_STATE_DIR="$CASE_DIR/state"
+	export HERDR_PLUGIN_ROOT="$ROOT"
+	export BLEATR_SKIP_HERDR=1
+	export BLEATR_SAY_COMMAND="printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"; printf 'say\n' >> \"$CASE_DIR/order\""
+	export BLEATR_BELL_COMMAND="printf '%s\n' \"\$BLEATR_SOUND_FILE\" >> \"$CASE_DIR/bell\"; printf 'bell\n' >> \"$CASE_DIR/order\""
+	export BLEATR_SUMMARY_MODEL=none
+	unset BLEATR_SUMMARIZE_COMMAND BLEATR_BELL BLEATR_VOICE BLEATR_COOLDOWN_SECONDS BLEATR_NOTIFY_ON BLEATR_SUMMARY_TIMEOUT_SECONDS
+	export HERDR_PLUGIN_CONTEXT_JSON='{"workspace_id":"w1","workspace_label":"herdr-bleatr","tab_label":"1"}'
+}
+
+event() { # status [agent]
+	jq -cn --arg s "$1" --arg a "${2:-claude}" \
+		'{event:"pane_agent_status_changed",data:{type:"pane_agent_status_changed",pane_id:"w1:p1",workspace_id:"w1",agent_status:$s,agent:$a}}'
+}
+
+run_bleat() { # status -> stdout of bleat
+	HERDR_PLUGIN_EVENT_JSON="$(event "$@")" bash "$BLEAT" 2>"$CASE_DIR/stderr"
+}
+
+said() { cat "$CASE_DIR/said" 2>/dev/null; }
+
+# --- cases -------------------------------------------------------------------
+
+setup ignores-working
+run_bleat working >/dev/null
+if [ ! -e "$CASE_DIR/said" ]; then pass "a working status is ignored"; else fail "a working status is ignored" "$(said)"; fi
+
+setup fallback-sentence
+out="$(run_bleat done)"
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && [ "$out" = "$(said)" ]; then
+	pass "done with summary_model=none speaks the template sentence"
+else
+	fail "done with summary_model=none speaks the template sentence" "said: $(said)" "stdout: $out"
+fi
+
+setup blocked-sentence
+run_bleat blocked codex >/dev/null
+if [ "$(said)" = "Codex in herdr-bleatr is waiting for your approval or an answer." ]; then
+	pass "blocked uses the approval phrasing"
+else
+	fail "blocked uses the approval phrasing" "$(said)"
+fi
+
+setup custom-summarizer
+export BLEATR_SUMMARIZE_COMMAND="cp \"\$BLEATR_PROMPT_FILE\" \"$CASE_DIR/prompt\"; cat > \"$CASE_DIR/stdin\"; printf '  \"Claude **finished** the\nplugin.\"  \n'"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude finished the plugin." ]; then
+	pass "summarizer output is collapsed to one clean line"
+else
+	fail "summarizer output is collapsed to one clean line" "$(said)"
+fi
+if grep -q '^Event: done' "$CASE_DIR/prompt" && grep -q '^Agent: claude' "$CASE_DIR/prompt" &&
+	grep -q '^Workspace: herdr-bleatr' "$CASE_DIR/prompt" && grep -q '^Tab: 1' "$CASE_DIR/prompt" &&
+	grep -q 'No terminal output' "$CASE_DIR/prompt"; then
+	pass "prompt file carries event, agent, workspace, and tab"
+else
+	fail "prompt file carries event, agent, workspace, and tab" "$(cat "$CASE_DIR/prompt")"
+fi
+if cmp -s "$CASE_DIR/prompt" "$CASE_DIR/stdin"; then
+	pass "prompt is also delivered on stdin"
+else
+	fail "prompt is also delivered on stdin"
+fi
+
+setup summarizer-fails
+export BLEATR_SUMMARIZE_COMMAND="echo boom >&2; exit 1"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && grep -q boom "$CASE_DIR/state/summarize.err"; then
+	pass "a failing summarizer falls back to the template and logs stderr"
+else
+	fail "a failing summarizer falls back to the template and logs stderr" "$(said)" "$(cat "$CASE_DIR/state/summarize.err" 2>/dev/null)"
+fi
+
+setup summarizer-hangs
+export BLEATR_SUMMARIZE_COMMAND="sleep 30"
+export BLEATR_SUMMARY_TIMEOUT_SECONDS=1
+start=$(date +%s)
+run_bleat done >/dev/null
+elapsed=$(($(date +%s) - start))
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && [ "$elapsed" -lt 10 ]; then
+	pass "a hanging summarizer is cut off at the timeout"
+else
+	fail "a hanging summarizer is cut off at the timeout" "said: $(said)" "elapsed: ${elapsed}s"
+fi
+
+setup cooldown
+run_bleat done >/dev/null
+run_bleat done >/dev/null
+run_bleat blocked >/dev/null
+if [ "$(said | wc -l | tr -d ' ')" = 2 ]; then
+	pass "a repeat within the cooldown is skipped, a different status is not"
+else
+	fail "a repeat within the cooldown is skipped, a different status is not" "$(said)"
+fi
+
+setup mute
+bash "$BLEAT" mute 2>/dev/null
+run_bleat done >/dev/null
+[ -e "$CASE_DIR/said" ] && fail "muted: nothing is spoken" "$(said)" || pass "muted: nothing is spoken"
+bash "$BLEAT" toggle 2>/dev/null
+run_bleat done >/dev/null
+[ -e "$CASE_DIR/said" ] && pass "toggle unmutes" || fail "toggle unmutes"
+
+setup bell-order
+export BLEATR_BELL="$CASE_DIR/ding.wav"
+: >"$CASE_DIR/ding.wav"
+run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "bell say " ] && [ "$(cat "$CASE_DIR/bell")" = "$CASE_DIR/ding.wav" ]; then
+	pass "the bell plays before speech"
+else
+	fail "the bell plays before speech" "$(cat "$CASE_DIR/order" 2>/dev/null | tr '\n' ' ')"
+fi
+
+setup bell-missing
+export BLEATR_BELL="NoSuchSound"
+run_bleat done >/dev/null
+if [ ! -e "$CASE_DIR/bell" ] && [ -e "$CASE_DIR/said" ] && grep -q "not found" "$CASE_DIR/stderr"; then
+	pass "an unknown bell is logged and speech still happens"
+else
+	fail "an unknown bell is logged and speech still happens" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup config-file
+unset BLEATR_SAY_COMMAND BLEATR_SUMMARY_MODEL
+cat >"$CASE_DIR/config/config.toml" <<EOF
+# comment line
+voice = "Daniel"   # trailing comment
+bell = false
+summary_model = 'none'
+notify_on = ["idle", "blocked"]
+cooldown_seconds = 0
+say_command = 'printf "%s|%s\n" "\$BLEATR_MESSAGE" "\$BLEATR_VOICE_UNUSED" >> "$CASE_DIR/said"'
+EOF
+run_bleat done >/dev/null
+run_bleat idle >/dev/null
+run_bleat idle >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr is idle.|
+Claude in herdr-bleatr is idle.|" ]; then
+	pass "config.toml: strings, arrays, comments, and a quoted say_command parse"
+else
+	fail "config.toml: strings, arrays, comments, and a quoted say_command parse" "$(said)"
+fi
+if bash "$BLEAT" config 2>/dev/null | grep -q '^voice=Daniel$'; then
+	pass "bleat config prints effective settings"
+else
+	fail "bleat config prints effective settings" "$(bash "$BLEAT" config 2>&1)"
+fi
+
+setup env-overrides-file
+printf 'voice = "Daniel"\n' >"$CASE_DIR/config/config.toml"
+if BLEATR_VOICE=Samantha bash "$BLEAT" config 2>/dev/null | grep -q '^voice=Samantha$'; then
+	pass "an env var overrides config.toml"
+else
+	fail "an env var overrides config.toml"
+fi
+
+setup lock-serializes
+export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 1; printf 'end\n' >> \"$CASE_DIR/order\""
+export BLEATR_COOLDOWN_SECONDS=0
+run_bleat done >/dev/null &
+run_bleat blocked >/dev/null &
+wait
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start end start end " ]; then
+	pass "concurrent bleats do not overlap"
+else
+	fail "concurrent bleats do not overlap" "$(cat "$CASE_DIR/order" | tr '\n' ' ')"
+fi
+
+# --- live case ---------------------------------------------------------------
+
+if [ "${BLEATR_LIVE:-}" = 1 ] && [ "${HERDR_ENV:-}" = 1 ]; then
+	HERDR="${HERDR_BIN_PATH:-herdr}"
+	if "$HERDR" plugin list --plugin bleatr >/dev/null 2>&1; then
+		live_config="$("$HERDR" plugin config-dir bleatr)/config.toml"
+		saved=""
+		if [ -f "$live_config" ]; then
+			saved="$WORK/config.toml.saved"
+			cp "$live_config" "$saved"
+		fi
+		record="$WORK/live-said"
+		cat >"$live_config" <<EOF
+summary_model = "none"
+cooldown_seconds = 0
+say_command = 'printf "%s\n" "\$BLEATR_MESSAGE" >> "$record"'
+EOF
+		pane="$("$HERDR" pane split --current --direction down --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')"
+		"$HERDR" pane report-agent "$pane" --source custom:bleatr-test --agent bleatbot --state working >/dev/null
+		sleep 1
+		"$HERDR" pane report-agent "$pane" --source custom:bleatr-test --agent bleatbot --state idle --seq 2 >/dev/null
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			[ -s "$record" ] && break
+			sleep 1
+		done
+		"$HERDR" pane close "$pane" >/dev/null
+		if [ -n "$saved" ]; then cp "$saved" "$live_config"; else rm -f "$live_config"; fi
+		if grep -q "Bleatbot in .* finished and is waiting for you." "$record" 2>/dev/null; then
+			pass "live: a real status change reaches say through the Herdr event hook"
+		else
+			fail "live: a real status change reaches say through the Herdr event hook" "$(cat "$record" 2>/dev/null)" \
+				"$("$HERDR" plugin log list --plugin bleatr --limit 2 | jq -c '.result.logs[] | {status, stdout, stderr}')"
+		fi
+	else
+		printf 'skip live: plugin bleatr is not linked\n'
+	fi
+else
+	printf 'skip live: set BLEATR_LIVE=1 inside a Herdr session with the plugin linked\n'
+fi
+
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]
