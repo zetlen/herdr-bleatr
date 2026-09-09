@@ -736,6 +736,158 @@ else
 	fail "a lock older than any sentence is taken over" "$(cat "$CASE_DIR/stderr")"
 fi
 
+setup skip
+# `skip` stops the sentence being spoken and nothing else. The fake say
+# writes `end` two seconds in, and the case waits
+# past that: a signal that reached the bleat but not the voice under it leaves
+# the voice orphaned and still talking, which is the same as not skipping.
+export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 2; printf 'end\n' >> \"$CASE_DIR/order\""
+export BLEATR_COOLDOWN_SECONDS=0
+# The bleat is signalled, so it goes through a subshell that ends on `true`:
+# a job this shell reaped as killed would print a Terminated notice among the
+# results, which is noise here and looks like a failure.
+(run_bleat done >/dev/null || true) 2>/dev/null &
+first=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -s "$CASE_DIR/order" ] && break
+	sleep 0.2
+done
+bash "$BLEAT" skip 2>"$CASE_DIR/skip-stderr"
+wait "$first"
+sleep 2.5
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start " ]; then
+	pass "skip stops the sentence being spoken"
+else
+	fail "skip stops the sentence being spoken" "$(cat "$CASE_DIR/order" 2>/dev/null | tr '\n' ' ')"
+fi
+# The skipped bleat still has to run its EXIT trap on the way out. A lock left
+# behind would drop every notification after it for the next two minutes.
+if [ ! -e "$CASE_DIR/state/speaking.lock" ]; then
+	pass "the skipped bleat hands back the speech lock"
+else
+	fail "the skipped bleat hands back the speech lock" "$(find "$CASE_DIR/state")"
+fi
+BLEATR_SAY_COMMAND="printf '%s\n' \"\$BLEATR_MESSAGE\" >> \"$CASE_DIR/said\"" run_bleat blocked >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr is waiting for your approval or an answer." ]; then
+	pass "a skip does not mute: the next notification speaks"
+else
+	fail "a skip does not mute: the next notification speaks" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup skip-nothing-speaking
+# Skipping when nothing is speaking is not an error: no output and a zero
+# exit, including when a lock is lying around naming a bleat already gone,
+# where the pid could since have been handed to something else entirely.
+bash "$BLEAT" skip 2>"$CASE_DIR/skip-stderr"
+rc=$?
+mkdir -p "$CASE_DIR/state/speaking.lock"
+sh -c 'printf %s $$' >"$CASE_DIR/state/speaking.lock/pid"
+bash "$BLEAT" skip 2>>"$CASE_DIR/skip-stderr"
+rc_stale=$?
+if [ "$rc" = 0 ] && [ "$rc_stale" = 0 ] && [ ! -s "$CASE_DIR/skip-stderr" ]; then
+	pass "skip with nothing speaking is a silent no-op"
+else
+	fail "skip with nothing speaking is a silent no-op" "rc $rc/$rc_stale" "$(cat "$CASE_DIR/skip-stderr")"
+fi
+rm -rf "$CASE_DIR/state/speaking.lock"
+run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; then
+	pass "a skip that found nothing to stop does not mute either"
+else
+	fail "a skip that found nothing to stop does not mute either" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup skip-grandchild
+# The pid in the lock is the bleat, and under say_command the voice is two
+# levels below it: `sh -c` is the child and the speaker runs under that. A skip
+# that killed only the direct child would orphan the speaker, which talks on --
+# here, by writing `end` a couple of seconds after the skip. The trailing `:`
+# keeps sh from exec'ing the script and collapsing the tree by a level.
+cat >"$CASE_DIR/voice.sh" <<VOICE
+#!/bin/sh
+printf 'start\n' >> "$CASE_DIR/order"
+sleep 2
+printf 'end\n' >> "$CASE_DIR/order"
+VOICE
+chmod +x "$CASE_DIR/voice.sh"
+export BLEATR_SAY_COMMAND="\"$CASE_DIR/voice.sh\"; :"
+(run_bleat done >/dev/null || true) 2>/dev/null &
+first=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	[ -s "$CASE_DIR/order" ] && break
+	sleep 0.2
+done
+bash "$BLEAT" skip 2>"$CASE_DIR/skip-stderr"
+wait "$first"
+sleep 2.5
+if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "start " ]; then
+	pass "skip silences a say_command speaker running under sh -c"
+else
+	fail "skip silences a say_command speaker running under sh -c" "$(cat "$CASE_DIR/order" 2>/dev/null | tr '\n' ' ')"
+fi
+
+setup rate
+# `rate` is words per minute and reaches `say` as -r. The other cases replace
+# `say` with say_command; this one needs the real code path, so a fake `say`
+# goes on PATH -- which is also the only `say` a Linux runner has.
+unset BLEATR_SAY_COMMAND
+export BLEATR_COOLDOWN_SECONDS=0
+mkdir -p "$CASE_DIR/bin"
+cat >"$CASE_DIR/bin/say" <<FAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CASE_DIR/say-args"
+FAKE
+chmod +x "$CASE_DIR/bin/say"
+sentence="Claude in herdr-bleatr finished and is waiting for you."
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-- $sentence" ]; then
+	pass "an unset rate passes no rate flag at all"
+else
+	fail "an unset rate passes no rate flag at all" "$(cat "$CASE_DIR/say-args" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")"
+fi
+rm -f "$CASE_DIR/say-args"
+BLEATR_RATE=220 PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-r 220 -- $sentence" ]; then
+	pass "rate reaches say as -r words per minute"
+else
+	fail "rate reaches say as -r words per minute" "$(cat "$CASE_DIR/say-args" 2>/dev/null)"
+fi
+rm -f "$CASE_DIR/say-args"
+BLEATR_VOICE="Bad News" BLEATR_RATE=220 PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-v Bad News -r 220 -- $sentence" ]; then
+	pass "a voice with a space in it survives alongside the rate"
+else
+	fail "a voice with a space in it survives alongside the rate" "$(cat "$CASE_DIR/say-args" 2>/dev/null)"
+fi
+rm -f "$CASE_DIR/say-args"
+# A rate `say` would refuse costs the whole sentence, so a value that is not a
+# positive number is dropped instead of passed on.
+printf 'rate = "fast"\n' >"$CASE_DIR/config/config.toml"
+out="$(bash "$BLEAT" config 2>/dev/null)"
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if printf '%s\n' "$out" | grep -q '^rate=$' && [ "$(cat "$CASE_DIR/say-args" 2>/dev/null)" = "-- $sentence" ]; then
+	pass "a non-numeric rate is dropped rather than passed on"
+else
+	fail "a non-numeric rate is dropped rather than passed on" "$(cat "$CASE_DIR/say-args" 2>/dev/null)" "$out"
+fi
+
+setup rate-say-command
+# A custom say_command owns its own rate, the way it owns its own voice: the
+# `say` path is not taken at all, so there is nowhere for a flag to be added.
+mkdir -p "$CASE_DIR/bin"
+cat >"$CASE_DIR/bin/say" <<FAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CASE_DIR/say-args"
+FAKE
+chmod +x "$CASE_DIR/bin/say"
+export BLEATR_RATE=220
+PATH="$CASE_DIR/bin:$PATH" run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ] && [ ! -e "$CASE_DIR/say-args" ]; then
+	pass "rate is ignored when say_command is set"
+else
+	fail "rate is ignored when say_command is set" "$(said)" "$(cat "$CASE_DIR/say-args" 2>/dev/null)"
+fi
+
 # --- live case ---------------------------------------------------------------
 
 if [ "${BLEATR_LIVE:-}" = 1 ] && [ "${HERDR_ENV:-}" = 1 ]; then

@@ -11,6 +11,7 @@
 #   bleat test       run the pipeline for the current pane as if it went `done`
 #   bleat toggle     mute / unmute (writes a state file; the plugin stays enabled)
 #   bleat mute | unmute
+#   bleat skip       stop the sentence being spoken now, without muting
 #   bleat config     print the config file path and the effective settings
 #   bleat setup      copy config.example.toml into the config dir, unless a
 #                    config.toml is already there; print its path
@@ -97,6 +98,13 @@ setting() { # VAR key ENV_NAME default
 load_config() {
 	read_config_file
 	setting VOICE voice BLEATR_VOICE ""
+	setting RATE rate BLEATR_RATE ""
+	# Words per minute, and nothing else: a rate the speech command would
+	# refuse takes the whole sentence down with it, so anything that is not a
+	# positive number is dropped and no rate flag is passed at all.
+	case "$RATE" in
+	0* | *[!0-9]*) RATE="" ;;
+	esac
 	setting BELL bell BLEATR_BELL "false"
 	setting SUMMARY_MODEL summary_model BLEATR_SUMMARY_MODEL "claude"
 	setting MODEL_ID model_id BLEATR_MODEL_ID ""
@@ -115,8 +123,8 @@ print_config() {
 	printf 'config file: %s%s\n' "$CONFIG_FILE" "$([ -r "$CONFIG_FILE" ] || printf ' (missing, using defaults)')"
 	printf 'state dir:   %s\n' "$STATE_DIR"
 	printf 'muted:       %s\n' "$(is_muted && echo yes || echo no)"
-	printf 'voice=%s\nbell=%s\nsummary_model=%s\nmodel_id=%s\nnotify_on=%s\ncooldown_seconds=%s\nmax_words=%s\ntranscript_lines=%s\nsummary_timeout_seconds=%s\nsay_command=%s\nsummarize_command=%s\n' \
-		"$VOICE" "$BELL" "$SUMMARY_MODEL" "$MODEL_ID" "$NOTIFY_ON" "$COOLDOWN_SECONDS" \
+	printf 'voice=%s\nrate=%s\nbell=%s\nsummary_model=%s\nmodel_id=%s\nnotify_on=%s\ncooldown_seconds=%s\nmax_words=%s\ntranscript_lines=%s\nsummary_timeout_seconds=%s\nsay_command=%s\nsummarize_command=%s\n' \
+		"$VOICE" "$RATE" "$BELL" "$SUMMARY_MODEL" "$MODEL_ID" "$NOTIFY_ON" "$COOLDOWN_SECONDS" \
 		"$MAX_WORDS" "$TRANSCRIPT_LINES" "$SUMMARY_TIMEOUT" "$SAY_COMMAND" "$SUMMARIZE_COMMAND"
 }
 
@@ -295,6 +303,30 @@ acquire_speech_lock() { # 0: the floor is ours, 1: someone else is speaking
 	rm -rf "$stale"
 	log "taking over a speech lock left behind by pid ${owner:-unknown}"
 	claim_speech_lock
+}
+
+# `skip` stops the sentence being spoken and nothing else. The mute file is
+# not touched, so the next notification speaks. The lock names the bleat that
+# has the floor, not the voice: `say` is that bleat's child, and under
+# `say_command` the real speaker is a grandchild with `sh -c` in between. A
+# signalled bleat dies without waiting for what it started, so anything alive
+# under it would be orphaned and talk on. The tree comes down from the bottom
+# instead, the way run_with_timeout ends a wrapped summarizer, and the bleat's
+# own EXIT trap hands the lock back on the way out.
+skip_speech() {
+	local owner child
+	owner="$(cat "$SPEAK_LOCK/pid" 2>/dev/null)"
+	if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+		debug "nothing is speaking; nothing to skip"
+		return 0
+	fi
+	for child in $(pgrep -P "$owner" 2>/dev/null); do
+		pkill -P "$child" 2>/dev/null
+		kill "$child" 2>/dev/null
+	done
+	kill "$owner" 2>/dev/null
+	debug "skipped the sentence pid $owner was speaking"
+	return 0
 }
 
 sanitize_speech() { # stdin -> one clean line, safe to hand to a shell
@@ -600,29 +632,50 @@ play_bell() { # sentence
 	fi
 }
 
+# `rate` is words per minute, which is what `say -r` and espeak's -s take.
+# spd-say's -R is not: Speech Dispatcher wants a relative -100 to 100, which it
+# maps onto the synthesizer's own range -- 0 is its default 175 wpm, +100 its
+# 450 wpm ceiling, -100 its 80 wpm floor. Running that mapping backwards, and
+# clamping at both ends, is how the setting keeps one unit across backends.
+spd_rate() { # words per minute -> -100..100
+	local wpm="$1" r
+	if [ "$wpm" -ge 175 ]; then
+		r=$(((wpm - 175) * 100 / 275))
+		[ "$r" -gt 100 ] && r=100
+	else
+		r=$(((wpm - 175) * 100 / 95))
+		[ "$r" -lt -100 ] && r=-100
+	fi
+	printf '%s' "$r"
+}
+
 # `say_command` runs under `sh -c` with the sentence in $BLEATR_MESSAGE and
-# makes `voice` the command's business. Without it, macOS `say` is used, and
-# on Linux the first available speech tool stands in for it.
+# makes `voice` and `rate` the command's business. Without it, macOS `say` is
+# used, and on Linux the first available speech tool stands in for it. A voice
+# name can carry a space, as "Bad News" does, so it stays quoted; an empty
+# rate has to disappear flag and all.
 speak() { # sentence
 	local text="$1"
 	if [ -n "$SAY_COMMAND" ]; then
 		BLEATR_MESSAGE="$text" sh -c "$SAY_COMMAND"
 	elif command -v say >/dev/null 2>&1; then
 		if [ -n "$VOICE" ]; then
-			say -v "$VOICE" -- "$text"
+			say -v "$VOICE" ${RATE:+-r "$RATE"} -- "$text"
 		else
-			say -- "$text"
+			say ${RATE:+-r "$RATE"} -- "$text"
 		fi
 	elif command -v spd-say >/dev/null 2>&1; then
+		local relative=""
+		[ -n "$RATE" ] && relative="$(spd_rate "$RATE")"
 		if [ -n "$VOICE" ]; then
-			spd-say -w -y "$VOICE" -- "$text"
+			spd-say -w -y "$VOICE" ${relative:+-R "$relative"} -- "$text"
 		else
-			spd-say -w -- "$text"
+			spd-say -w ${relative:+-R "$relative"} -- "$text"
 		fi
 	elif command -v espeak-ng >/dev/null 2>&1; then
-		espeak-ng ${VOICE:+-v "$VOICE"} -- "$text"
+		espeak-ng ${VOICE:+-v "$VOICE"} ${RATE:+-s "$RATE"} -- "$text"
 	elif command -v espeak >/dev/null 2>&1; then
-		espeak ${VOICE:+-v "$VOICE"} -- "$text"
+		espeak ${VOICE:+-v "$VOICE"} ${RATE:+-s "$RATE"} -- "$text"
 	else
 		log "no speech command found; set say_command in $CONFIG_FILE"
 		return 1
@@ -775,13 +828,14 @@ test) test_bleat ;;
 toggle) if is_muted; then set_muted no; else set_muted yes; fi ;;
 mute) set_muted yes ;;
 unmute) set_muted no ;;
+skip) skip_speech ;;
 config) print_config ;;
 setup) setup_config ;;
 intro) print_intro "${2:-}" ;;
 intro-popup) open_intro_popup ;;
 startup) startup ;;
 *)
-	log "usage: bleat [event|test|toggle|mute|unmute|config|setup|intro|intro-popup|startup]"
+	log "usage: bleat [event|test|toggle|mute|unmute|skip|config|setup|intro|intro-popup|startup]"
 	exit 2
 	;;
 esac

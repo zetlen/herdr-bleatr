@@ -97,7 +97,7 @@ plugin does not control, so a summary that can smuggle `$(...)` into a remote
 shell would be a hole, not a quoting bug. Prefer passing it on stdin anyway
 (`say` and `espeak-ng` both read it) over splicing it into a command string.
 
-## Mute
+## Mute and skip
 
 The `toggle` action mutes and unmutes speech without disabling the plugin, and
 confirms with a Herdr toast. Bind it in Herdr's `config.toml`:
@@ -114,6 +114,17 @@ Or from a shell:
 
 ```sh
 herdr plugin action invoke bleatr.toggle
+```
+
+The `skip` action stops the sentence being spoken now. Nothing is muted, so
+the next notification speaks as usual.
+
+```toml
+[[keys.command]]
+key = "prefix+s"
+type = "plugin_action"
+command = "bleatr.skip"
+description = "Bleatr: skip the current sentence"
 ```
 
 ## Troubleshooting
