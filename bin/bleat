@@ -226,20 +226,14 @@ set_muted() {
 
 # ---------------------------------------------------------------- helpers ---
 
-# Run a command with a wall-clock limit. Prefers coreutils `timeout`
-# (Linux; `gtimeout` from brew coreutils on macOS) and falls back to a
-# background watcher, since stock macOS has no timeout binary.
+# Run a command with a wall-clock limit. Stock macOS ships no `timeout`, so the
+# limit is kept here rather than handed to a binary that may not be there: the
+# command runs in the background and a watcher takes it down, along with
+# anything it started, once the time is up. One path on every platform, and it
+# is the one the tests run.
 run_with_timeout() { # seconds cmd...
 	local secs="$1"
 	shift
-	if command -v timeout >/dev/null 2>&1; then
-		timeout "$secs" "$@"
-		return
-	fi
-	if command -v gtimeout >/dev/null 2>&1; then
-		gtimeout "$secs" "$@"
-		return
-	fi
 	# Without a redirection of its own a background command reads from
 	# /dev/null, and the summarizer is promised the prompt on stdin.
 	"$@" <&0 &
@@ -257,7 +251,12 @@ run_with_timeout() { # seconds cmd...
 	local watcher=$!
 	wait "$pid"
 	local rc=$?
+	# The watcher is sitting in `sleep`, which is a child of it rather than it:
+	# killing the subshell alone leaves that behind to run the clock out.
+	local naps
+	naps="$(pgrep -P "$watcher" 2>/dev/null)"
 	kill "$watcher" 2>/dev/null
+	[ -n "$naps" ] && kill $naps 2>/dev/null
 	return "$rc"
 }
 
