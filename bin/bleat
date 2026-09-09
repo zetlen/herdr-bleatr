@@ -12,6 +12,8 @@
 #   bleat toggle     mute / unmute (writes a state file; the plugin stays enabled)
 #   bleat mute | unmute
 #   bleat config     print the config file path and the effective settings
+#   bleat setup      copy config.example.toml into the config dir, unless a
+#                    config.toml is already there; print its path
 #
 # Configuration: $HERDR_PLUGIN_CONFIG_DIR/config.toml (see config.example.toml).
 # Any key can be overridden with an env var BLEATR_<KEY> in upper case, which
@@ -111,6 +113,23 @@ print_config() {
 	printf 'voice=%s\nbell=%s\nsummary_model=%s\nmodel_id=%s\nnotify_on=%s\ncooldown_seconds=%s\nmax_words=%s\ntranscript_lines=%s\nsummary_timeout_seconds=%s\nsay_command=%s\nsummarize_command=%s\n' \
 		"$VOICE" "$BELL" "$SUMMARY_MODEL" "$MODEL_ID" "$NOTIFY_ON" "$COOLDOWN_SECONDS" \
 		"$MAX_WORDS" "$TRANSCRIPT_LINES" "$SUMMARY_TIMEOUT" "$SAY_COMMAND" "$SUMMARIZE_COMMAND"
+}
+
+setup_config() {
+	# The example ships in the plugin checkout, which is the working directory
+	# for plugin commands; fall back to the script's own location for bare runs.
+	local root="${HERDR_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
+	local example="$root/config.example.toml"
+	if [ -f "$CONFIG_FILE" ]; then
+		log "config already exists, leaving it alone: $CONFIG_FILE"
+		"$HERDR" notification show "Bleatr config exists" --body "$CONFIG_FILE" >/dev/null 2>&1 || true
+	else
+		mkdir -p "$CONFIG_DIR" || { log "cannot create $CONFIG_DIR"; return 1; }
+		cp "$example" "$CONFIG_FILE" || { log "cannot copy $example to $CONFIG_FILE"; return 1; }
+		log "wrote $CONFIG_FILE; edit it to taste"
+		"$HERDR" notification show "Bleatr config created" --body "$CONFIG_FILE" >/dev/null 2>&1 || true
+	fi
+	printf '%s\n' "$CONFIG_FILE"
 }
 
 # ------------------------------------------------------------ mute state ---
@@ -500,8 +519,9 @@ toggle) if is_muted; then set_muted no; else set_muted yes; fi ;;
 mute) set_muted yes ;;
 unmute) set_muted no ;;
 config) print_config ;;
+setup) setup_config ;;
 *)
-	log "usage: bleat [event|test|toggle|mute|unmute|config]"
+	log "usage: bleat [event|test|toggle|mute|unmute|config|setup]"
 	exit 2
 	;;
 esac

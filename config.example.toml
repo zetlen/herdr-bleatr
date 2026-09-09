@@ -1,5 +1,6 @@
 # Herdr Bleatr configuration.
-# Copy to the directory printed by `herdr plugin config-dir bleatr` as config.toml.
+# `herdr plugin action invoke bleatr.setup` copies this file to the directory
+# printed by `herdr plugin config-dir bleatr` as config.toml.
 # Every key is optional; the values shown are the defaults unless noted.
 # Any key can also be set with an env var: BLEATR_VOICE, BLEATR_BELL, and so on.
 

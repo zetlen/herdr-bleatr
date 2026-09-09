@@ -169,18 +169,37 @@ Claude in herdr-bleatr is idle.|" ]; then
 else
 	fail "config.toml: strings, arrays, comments, and a quoted say_command parse" "$(said)"
 fi
-if bash "$BLEAT" config 2>/dev/null | grep -q '^voice=Daniel$'; then
+# Output is captured first: piping into grep -q would SIGPIPE bleat, which
+# pipefail reports as a failure.
+out="$(bash "$BLEAT" config 2>/dev/null)"
+if printf '%s\n' "$out" | grep -q '^voice=Daniel$'; then
 	pass "bleat config prints effective settings"
 else
-	fail "bleat config prints effective settings" "$(bash "$BLEAT" config 2>&1)"
+	fail "bleat config prints effective settings" "$out"
 fi
 
 setup env-overrides-file
 printf 'voice = "Daniel"\n' >"$CASE_DIR/config/config.toml"
-if BLEATR_VOICE=Samantha bash "$BLEAT" config 2>/dev/null | grep -q '^voice=Samantha$'; then
+out="$(BLEATR_VOICE=Samantha bash "$BLEAT" config 2>/dev/null)"
+if printf '%s\n' "$out" | grep -q '^voice=Samantha$'; then
 	pass "an env var overrides config.toml"
 else
-	fail "an env var overrides config.toml"
+	fail "an env var overrides config.toml" "$out"
+fi
+
+setup setup-creates-config
+out="$(bash "$BLEAT" setup 2>/dev/null)"
+if cmp -s "$ROOT/config.example.toml" "$CASE_DIR/config/config.toml" && [ "$out" = "$CASE_DIR/config/config.toml" ]; then
+	pass "setup copies config.example.toml into the config dir and prints the path"
+else
+	fail "setup copies config.example.toml into the config dir and prints the path" "stdout: $out"
+fi
+printf 'voice = "Daniel"\n' >"$CASE_DIR/config/config.toml"
+out="$(bash "$BLEAT" setup 2>/dev/null)"
+if [ "$(cat "$CASE_DIR/config/config.toml")" = 'voice = "Daniel"' ] && [ "$out" = "$CASE_DIR/config/config.toml" ]; then
+	pass "setup leaves an existing config.toml alone"
+else
+	fail "setup leaves an existing config.toml alone" "$(cat "$CASE_DIR/config/config.toml")" "stdout: $out"
 fi
 
 setup lock-serializes

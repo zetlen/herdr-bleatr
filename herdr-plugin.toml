@@ -20,6 +20,13 @@ contexts = ["global"]
 command = ["bash", "bin/bleat", "test"]
 
 [[actions]]
+id = "setup"
+title = "Bleatr: create config file"
+description = "Copy config.example.toml into the plugin config dir, unless one is already there"
+contexts = ["global"]
+command = ["bash", "bin/bleat", "setup"]
+
+[[actions]]
 id = "toggle"
 title = "Bleatr: mute / unmute"
 description = "Toggle speech without disabling the plugin"

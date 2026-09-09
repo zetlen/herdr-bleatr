@@ -41,14 +41,21 @@ herdr plugin action invoke bleatr.test
 
 ## Configure
 
-Copy the example config into place and edit it:
+Create the config file from the bundled example:
 
 ```sh
-cp config.example.toml "$(herdr plugin config-dir bleatr)/config.toml"
+herdr plugin action invoke bleatr.setup
 ```
 
-Every key is documented in `config.example.toml`. Any key can also be set
-with an environment variable named `BLEATR_<KEY>` in upper case:
+A Herdr toast shows the file's path, and an existing config file is left
+alone. Every key is documented in the file. Print the config directory:
+
+```sh
+herdr plugin config-dir bleatr
+```
+
+Any key can also be set with an environment variable named `BLEATR_<KEY>` in
+upper case:
 
 ```sh
 BLEATR_VOICE=Daniel BLEATR_SUMMARY_MODEL=none bash bin/bleat test
