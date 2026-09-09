@@ -24,7 +24,11 @@ the first one that fails:
 1. The event carries an agent status.
 2. The status is listed in `notify_on`. The default is `done` and `blocked`.
 3. Speech is not muted.
-4. The same pane and status were not spoken inside `cooldown_seconds`.
+4. The pane is not in the focused tab. The event context names the pane's
+   tab, and `herdr api snapshot` names the focused tab. A failed lookup
+   counts as not focused. The `test` subcommand skips this check because
+   the current pane is always in the focused tab.
+5. The same pane and status were not spoken inside `cooldown_seconds`.
 
 Only then does it call Herdr for the pane details and transcript, run the
 summarizer, take the speech lock, play the bell, and speak.
@@ -33,34 +37,7 @@ Every setting can be overridden with an environment variable named
 `BLEATR_<KEY>`. The tests use these, plus `BLEATR_SKIP_HERDR=1` so the script
 never calls Herdr.
 
-## Open issues and suggested approaches
-
-### Do not speak for the active tab (issue #1)
-
-Herdr suppresses its own popups for the active tab. Bleatr does not. None of
-the four checks above looks at which tab is focused, so an agent that asks a
-question in the tab you are watching is spoken aloud.
-
-Suggested fix:
-
-- `herdr agent get <pane>` returns the pane's `tab_id`. The `gather_pane`
-  function already makes this call.
-- `herdr api snapshot` returns `focused_tab_id`.
-- After the cooldown check, compare the two and return early when they match.
-  This adds one Herdr call, and only for events that pass the cheap checks.
-- The `test` subcommand must skip the comparison. It always targets the
-  current pane, which is in the active tab.
-- The tests run with Herdr stubbed out. Add an environment override for the
-  focused tab so both branches can be tested.
-- The comment above the event hook in `herdr-plugin.toml` describes Herdr's
-  own rule. Make it describe the script's check once the check exists.
-
-The Herdr socket API docs define `done` as idle and not yet seen. Whether
-Herdr reports `done` for a pane in the active tab is not verified. `blocked`
-carries no such condition.
-
-Decide whether a config key should let the user keep hearing the active tab.
-Recommendation: ship without one and add it if someone asks.
+## Open issue and suggested approach
 
 ### Install wizard (issue #2)
 

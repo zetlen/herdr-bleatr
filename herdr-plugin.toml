@@ -5,9 +5,9 @@ min_herdr_version = "0.7.0"
 description = "Speaks agent notifications aloud with macOS `say`: a small LLM turns the agent's last message into one spoken sentence"
 platforms = ["macos", "linux"]
 
-# Herdr has no "notification" event. Its toasts and sounds fire when an agent
-# in a background workspace reaches `done`, or any agent reaches `blocked`.
-# The hook receives every status change and exits early for the rest.
+# Herdr has no "notification" event. The hook receives every status change
+# and exits early unless the status is in `notify_on` and the pane is in a
+# tab the user is not looking at, which is when Herdr shows its own popup.
 [[events]]
 on = "pane.agent_status_changed"
 command = ["bash", "bin/bleat"]

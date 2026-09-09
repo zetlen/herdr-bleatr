@@ -223,12 +223,12 @@ titlecase() {
 # the Herdr calls wait in gather_pane until the event is known to be spoken.
 gather() {
 	local event="${HERDR_PLUGIN_EVENT_JSON:-{\}}" context="${HERDR_PLUGIN_CONTEXT_JSON:-{\}}"
-	EV_STATUS="" EV_PANE="" EV_AGENT="" EV_TITLE="" CTX_WORKSPACE="" CTX_TAB=""
+	EV_STATUS="" EV_PANE="" EV_AGENT="" EV_TITLE="" CTX_WORKSPACE="" CTX_TAB="" CTX_TAB_ID=""
 	local workspace_id=""
 	eval "$(printf '%s' "$event" | jq -r '.data // {} |
 		"EV_STATUS=\(.agent_status // "" | @sh) EV_PANE=\(.pane_id // "" | @sh) EV_AGENT=\(.display_agent // .agent // "" | @sh) EV_TITLE=\(.title // "" | @sh) workspace_id=\(.workspace_id // "" | @sh)"' 2>/dev/null)"
 	eval "$(printf '%s' "$context" | jq -r '
-		"CTX_WORKSPACE=\(.workspace_label // .workspace_id // "" | @sh) CTX_TAB=\(.tab_label // "" | @sh)"' 2>/dev/null)"
+		"CTX_WORKSPACE=\(.workspace_label // .workspace_id // "" | @sh) CTX_TAB=\(.tab_label // "" | @sh) CTX_TAB_ID=\(.tab_id // "" | @sh)"' 2>/dev/null)"
 	[ -n "$EV_PANE" ] || EV_PANE="${HERDR_PANE_ID:-}"
 	[ -n "$workspace_id" ] || workspace_id="${HERDR_WORKSPACE_ID:-}"
 	EV_WORKSPACE_ID="$workspace_id"
@@ -512,6 +512,20 @@ speak() { # sentence
 	fi
 }
 
+# ------------------------------------------------------------ focused tab ---
+
+# Herdr shows no popup for the tab the user is looking at, and neither does
+# this plugin. The hook's context names the event pane's tab; only the
+# session snapshot names the focused one. Anything unknown counts as not
+# focused, so a failed lookup still speaks.
+in_focused_tab() {
+	[ -n "$CTX_TAB_ID" ] || return 1
+	[ -z "${BLEATR_SKIP_HERDR:-}" ] || return 1
+	local focused
+	focused="$("$HERDR" api snapshot 2>/dev/null | jq -r '.result.snapshot.focused_tab_id // empty' 2>/dev/null)"
+	[ -n "$focused" ] && [ "$focused" = "$CTX_TAB_ID" ]
+}
+
 # --------------------------------------------------------------- cooldown ---
 
 # Integrations can flap a status within a second or two; one bleat per pane
@@ -553,6 +567,10 @@ bleat() {
 		debug "muted"
 		return 0
 	fi
+	if [ -z "${SPEAK_FOCUSED_TAB:-}" ] && in_focused_tab; then
+		debug "pane $EV_PANE is in the focused tab $CTX_TAB_ID"
+		return 0
+	fi
 	if in_cooldown; then
 		debug "cooldown: already bleated for $EV_PANE/$EV_STATUS within ${COOLDOWN_SECONDS}s"
 		return 0
@@ -575,7 +593,8 @@ bleat() {
 
 test_bleat() {
 	# Speak as if the current pane's agent had just finished, so `say`, the
-	# bell, and the summarizer can be checked end to end. Cooldown is skipped.
+	# bell, and the summarizer can be checked end to end. Cooldown and the
+	# focused-tab check are skipped: the current pane is always in view.
 	local pane="${HERDR_PANE_ID:-}"
 	if [ -z "$pane" ]; then
 		pane="$("$HERDR" pane current 2>/dev/null | jq -r '.result.pane.pane_id // empty')"
@@ -585,7 +604,7 @@ test_bleat() {
 	export HERDR_PLUGIN_EVENT_JSON
 	HERDR_PLUGIN_EVENT_JSON="$(jq -n --arg p "$pane" --arg a "${agent:-test agent}" --arg s "${BLEATR_TEST_STATUS:-done}" \
 		'{event:"pane_agent_status_changed", data:{type:"pane_agent_status_changed", pane_id:$p, agent_status:$s, agent:$a}}')"
-	BLEATR_COOLDOWN_SECONDS=0 bleat
+	BLEATR_COOLDOWN_SECONDS=0 SPEAK_FOCUSED_TAB=1 bleat
 }
 
 case "${1:-}" in

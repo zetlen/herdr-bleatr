@@ -4,8 +4,8 @@
 #
 # Unit cases run without Herdr. The live case needs a Herdr session with this
 # plugin linked and runs only with BLEATR_LIVE=1: it swaps in a test config
-# (restoring yours afterwards), drives a scratch pane through a real status
-# change, and checks the plugin log.
+# (restoring yours afterwards), drives a scratch pane in a background tab
+# through a real status change, and checks the plugin log.
 set -uo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -129,6 +129,49 @@ run_bleat done >/dev/null
 bash "$BLEAT" toggle 2>/dev/null
 run_bleat done >/dev/null
 [ -e "$CASE_DIR/said" ] && pass "toggle unmutes" || fail "toggle unmutes"
+
+setup active-tab
+# Herdr suppresses its own popups for the tab the user is looking at. The
+# event's tab comes from the invocation context; the focused tab comes from
+# `herdr api snapshot`, answered here by a fake herdr.
+unset BLEATR_SKIP_HERDR
+cat >"$CASE_DIR/herdr" <<'FAKE'
+#!/bin/sh
+case "$1 $2" in
+"api snapshot") printf '{"result":{"snapshot":{"focused_tab_id":"%s"}}}\n' "$FAKE_FOCUSED_TAB" ;;
+*) exit 1 ;;
+esac
+FAKE
+chmod +x "$CASE_DIR/herdr"
+export HERDR_BIN_PATH="$CASE_DIR/herdr"
+export HERDR_PLUGIN_CONTEXT_JSON='{"workspace_id":"w1","workspace_label":"herdr-bleatr","tab_id":"w1:t1","tab_label":"1"}'
+FAKE_FOCUSED_TAB=w1:t1 run_bleat blocked >/dev/null
+if [ ! -e "$CASE_DIR/said" ]; then
+	pass "an event in the focused tab is not spoken"
+else
+	fail "an event in the focused tab is not spoken" "$(said)"
+fi
+FAKE_FOCUSED_TAB=w1:t2 run_bleat blocked >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr is waiting for your approval or an answer." ]; then
+	pass "an event in a background tab is spoken"
+else
+	fail "an event in a background tab is spoken" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+rm -f "$CASE_DIR/said"
+FAKE_FOCUSED_TAB=w1:t1 bash "$BLEAT" test >/dev/null 2>"$CASE_DIR/stderr"
+if [ "$(said)" = "Test agent in herdr-bleatr finished and is waiting for you." ]; then
+	pass "bleat test speaks even though the current pane is in the focused tab"
+else
+	fail "bleat test speaks even though the current pane is in the focused tab" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+rm -f "$CASE_DIR/said"
+HERDR_BIN_PATH=false run_bleat done >/dev/null
+if [ "$(said)" = "Claude in herdr-bleatr finished and is waiting for you." ]; then
+	pass "an event is spoken when the focused tab cannot be read"
+else
+	fail "an event is spoken when the focused tab cannot be read" "$(said)" "$(cat "$CASE_DIR/stderr")"
+fi
+unset HERDR_BIN_PATH
 
 setup bell-order
 export BLEATR_BELL="$CASE_DIR/ding.wav"
@@ -337,7 +380,10 @@ summary_model = "none"
 cooldown_seconds = 0
 say_command = 'printf "%s\n" "\$BLEATR_MESSAGE" >> "$record"'
 EOF
-		pane="$("$HERDR" pane split --current --direction down --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')"
+		# The scratch pane goes in its own unfocused tab: a pane in the tab
+		# being looked at is never spoken.
+		tab="$("$HERDR" tab create --cwd "$PWD" --label bleatr-test --no-focus | jq -r '.result.tab.tab_id')"
+		pane="$("$HERDR" pane list | jq -r --arg t "$tab" '.result.panes[] | select(.tab_id == $t) | .pane_id' | head -n 1)"
 		"$HERDR" pane report-agent "$pane" --source custom:bleatr-test --agent bleatbot --state working >/dev/null
 		sleep 1
 		"$HERDR" pane report-agent "$pane" --source custom:bleatr-test --agent bleatbot --state idle --seq 2 >/dev/null
@@ -345,7 +391,7 @@ EOF
 			[ -s "$record" ] && break
 			sleep 1
 		done
-		"$HERDR" pane close "$pane" >/dev/null
+		"$HERDR" tab close "$tab" >/dev/null
 		if [ -n "$saved" ]; then cp "$saved" "$live_config"; else rm -f "$live_config"; fi
 		if grep -q "Bleatbot in .* finished and is waiting for you." "$record" 2>/dev/null; then
 			pass "live: a real status change reaches say through the Herdr event hook"

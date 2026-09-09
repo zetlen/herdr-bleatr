@@ -1,8 +1,8 @@
 # Herdr Bleatr
 
 A [Herdr](https://herdr.dev) plugin that speaks agent notifications aloud. When
-an agent finishes in a background tab, or stops to ask you something, Bleatr
-says one sentence with the macOS `say` command:
+an agent in a tab you are not looking at finishes, or stops to ask you
+something, Bleatr says one sentence with the macOS `say` command:
 
 > "Claude in herdr-bleatr finished the notifications plugin and is waiting for review."
 

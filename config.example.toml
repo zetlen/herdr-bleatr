@@ -29,9 +29,11 @@ summary_model = "claude"
 # Override the preset's model id, for example "claude-haiku-4-5".
 model_id = ""
 
-# Agent statuses that are spoken. `done` is what Herdr reports when an agent
-# in an unseen tab finishes; `blocked` means it is waiting for approval or an
-# answer. `idle` and `unknown` are also accepted but noisy.
+# Agent statuses that are spoken. `done` means the agent went idle and you
+# have not looked at its pane since; `blocked` means it is waiting for
+# approval or an answer. `idle` and `unknown` are also accepted but noisy.
+# Nothing is spoken for a pane in the tab you are looking at, whatever its
+# status; the `test` action is the one exception.
 notify_on = ["done", "blocked"]
 
 # Ignore a repeat of the same pane and status inside this many seconds.
