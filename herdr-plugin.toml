@@ -1,7 +1,7 @@
 id = "bleatr"
 name = "Herdr Bleatr"
 version = "0.1.0"
-min_herdr_version = "0.7.0"
+min_herdr_version = "0.9.0"
 description = "Speaks agent notifications aloud with macOS `say`: a small LLM turns the agent's last message into one spoken sentence"
 platforms = ["macos", "linux"]
 
@@ -11,6 +11,19 @@ platforms = ["macos", "linux"]
 [[events]]
 on = "pane.agent_status_changed"
 command = ["bash", "bin/bleat"]
+
+# Shows ON_STARTUP.md in a popup the first time the Herdr server starts with
+# the plugin enabled. Startup hooks do not run on install or link.
+[[startup]]
+command = ["bash", "bin/bleat", "startup"]
+
+[[panes]]
+id = "intro"
+title = "Welcome to Bleatr"
+placement = "popup"
+width = 90
+height = "85%"
+command = ["bash", "bin/bleat", "intro"]
 
 [[actions]]
 id = "test"
@@ -25,6 +38,13 @@ title = "Bleatr: create config file"
 description = "Copy config.example.toml into the plugin config dir, unless one is already there"
 contexts = ["global"]
 command = ["bash", "bin/bleat", "setup"]
+
+[[actions]]
+id = "intro"
+title = "Bleatr: show the introduction"
+description = "Open ON_STARTUP.md in a popup: what Bleatr does and the three setup steps"
+contexts = ["global"]
+command = ["bash", "bin/bleat", "intro-popup"]
 
 [[actions]]
 id = "toggle"

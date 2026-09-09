@@ -331,6 +331,76 @@ else
 	fail "setup leaves an existing config.toml alone" "$(cat "$CASE_DIR/config/config.toml")" "stdout: $out"
 fi
 
+setup intro-prints
+out="$(bash "$BLEAT" intro 2>"$CASE_DIR/stderr")"
+if [ -n "$out" ] && [ "$out" = "$(cat "$ROOT/ON_STARTUP.md")" ]; then
+	pass "intro prints ON_STARTUP.md"
+else
+	fail "intro prints ON_STARTUP.md" "$(cat "$CASE_DIR/stderr")" "$(printf '%s' "$out" | head -n 3)"
+fi
+
+setup intro-ansi
+# In the popup the intro is styled with ANSI escapes: headings bold, inline
+# code and indented blocks cyan, markdown markers gone. --ansi forces that
+# rendering when stdout is not a terminal.
+mkdir -p "$CASE_DIR/root"
+printf '# Title\n\nText with `code` inline.\n\n    indented block\n\n## Sub\n' >"$CASE_DIR/root/ON_STARTUP.md"
+B="$(printf '\033[1m')" C="$(printf '\033[36m')" R="$(printf '\033[0m')"
+want="$(printf '%sTitle%s\n\nText with %scode%s inline.\n\n%s    indented block%s\n\n%sSub%s\n' "$B" "$R" "$C" "$R" "$C" "$R" "$B" "$R")"
+out="$(HERDR_PLUGIN_ROOT="$CASE_DIR/root" bash "$BLEAT" intro --ansi 2>"$CASE_DIR/stderr")"
+if [ "$out" = "$want" ]; then
+	pass "intro --ansi styles headings and code"
+else
+	fail "intro --ansi styles headings and code" "$(printf '%s' "$out" | od -c | head -n 6)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+# A fake herdr that records every call and answers `plugin pane open` with
+# the exit status in $FAKE_POPUP_RC.
+fake_herdr() {
+	cat >"$CASE_DIR/herdr" <<FAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CASE_DIR/herdr-calls"
+case "\$1 \$2 \$3" in
+"plugin pane open") exit "\${FAKE_POPUP_RC:-0}" ;;
+esac
+exit 0
+FAKE
+	chmod +x "$CASE_DIR/herdr"
+	export HERDR_BIN_PATH="$CASE_DIR/herdr"
+}
+popup_opens() { grep -c '^plugin pane open --plugin bleatr --entrypoint intro$' "$CASE_DIR/herdr-calls" 2>/dev/null | tr -d ' '; }
+
+setup startup-once
+fake_herdr
+bash "$BLEAT" startup 2>"$CASE_DIR/stderr"
+bash "$BLEAT" startup 2>>"$CASE_DIR/stderr"
+if [ "$(popup_opens)" = 1 ]; then
+	pass "startup opens the intro popup once"
+else
+	fail "startup opens the intro popup once" "$(cat "$CASE_DIR/herdr-calls" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup startup-retries
+fake_herdr
+FAKE_POPUP_RC=1 bash "$BLEAT" startup 2>"$CASE_DIR/stderr"
+FAKE_POPUP_RC=1 bash "$BLEAT" startup 2>>"$CASE_DIR/stderr"
+if [ "$(popup_opens)" = 2 ] && grep -q '^notification show' "$CASE_DIR/herdr-calls"; then
+	pass "startup tries the popup again next time when it cannot open, and toasts"
+else
+	fail "startup tries the popup again next time when it cannot open, and toasts" "$(cat "$CASE_DIR/herdr-calls" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")"
+fi
+
+setup intro-action
+fake_herdr
+bash "$BLEAT" intro-popup 2>"$CASE_DIR/stderr"
+bash "$BLEAT" startup 2>>"$CASE_DIR/stderr"
+if [ "$(popup_opens)" = 1 ]; then
+	pass "the intro action opens the popup and startup then stays quiet"
+else
+	fail "the intro action opens the popup and startup then stays quiet" "$(cat "$CASE_DIR/herdr-calls" 2>/dev/null)" "$(cat "$CASE_DIR/stderr")"
+fi
+unset HERDR_BIN_PATH
+
 setup startup-cost
 # An ignored event is the common case and runs on every status change, so it
 # has to be cheap. Measured over ten runs to smooth out scheduler noise.

@@ -14,6 +14,10 @@
 #   bleat config     print the config file path and the effective settings
 #   bleat setup      copy config.example.toml into the config dir, unless a
 #                    config.toml is already there; print its path
+#   bleat intro      print ON_STARTUP.md; styled and paged on a terminal,
+#                    plain otherwise. --ansi forces the styling.
+#   bleat intro-popup  open ON_STARTUP.md in a Herdr popup pane
+#   bleat startup    startup hook: open the popup until it has been seen once
 #
 # Configuration: $HERDR_PLUGIN_CONFIG_DIR/config.toml (see config.example.toml).
 # Any key can be overridden with an env var BLEATR_<KEY> in upper case, which
@@ -116,11 +120,14 @@ print_config() {
 		"$MAX_WORDS" "$TRANSCRIPT_LINES" "$SUMMARY_TIMEOUT" "$SAY_COMMAND" "$SUMMARIZE_COMMAND"
 }
 
+# The plugin checkout, which is the working directory for plugin commands;
+# falls back to the script's own location for bare runs.
+plugin_root() {
+	printf '%s' "${HERDR_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
+}
+
 setup_config() {
-	# The example ships in the plugin checkout, which is the working directory
-	# for plugin commands; fall back to the script's own location for bare runs.
-	local root="${HERDR_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
-	local example="$root/config.example.toml"
+	local example="$(plugin_root)/config.example.toml"
 	if [ -f "$CONFIG_FILE" ]; then
 		log "config already exists, leaving it alone: $CONFIG_FILE"
 		"$HERDR" notification show "Bleatr config exists" --body "$CONFIG_FILE" >/dev/null 2>&1 || true
@@ -131,6 +138,68 @@ setup_config() {
 		"$HERDR" notification show "Bleatr config created" --body "$CONFIG_FILE" >/dev/null 2>&1 || true
 	fi
 	printf '%s\n' "$CONFIG_FILE"
+}
+
+# ------------------------------------------------------------------ intro ---
+
+# ON_STARTUP.md introduces the plugin and walks through setup. It is shown in
+# a popup pane once, by the startup hook, and on demand by the intro action.
+INTRO_SEEN="$STATE_DIR/intro-seen"
+
+# The file is markdown so it reads on GitHub; a terminal gets ANSI styling
+# instead: `#` headings bold, inline code and four-space blocks cyan.
+render_intro() { # stdin -> stdout
+	awk -v B="$(printf '\033[1m')" -v C="$(printf '\033[36m')" -v R="$(printf '\033[0m')" '
+		/^#+ / { sub(/^#+ /, ""); print B $0 R; next }
+		/^    / { print C $0 R; next }
+		{
+			line = $0; out = ""
+			while (match(line, /`[^`]+`/)) {
+				out = out substr(line, 1, RSTART - 1) C substr(line, RSTART + 1, RLENGTH - 2) R
+				line = substr(line, RSTART + RLENGTH)
+			}
+			print out line
+		}'
+}
+
+print_intro() { # [--ansi]
+	local file="$(plugin_root)/ON_STARTUP.md"
+	if [ "${1:-}" = --ansi ]; then
+		render_intro <"$file"
+	elif [ ! -t 1 ]; then
+		cat "$file"
+	elif command -v less >/dev/null 2>&1; then
+		# A user's $LESS may hold -F, which quits on a short file and would
+		# close the popup at once.
+		{
+			printf '\033[2mPress q to dismiss.\033[0m\n\n'
+			render_intro <"$file"
+		} | LESS= less -R
+	else
+		# Without a pager the popup would close as soon as the text is out.
+		printf '\033[2mPress Enter to dismiss.\033[0m\n\n'
+		render_intro <"$file"
+		read -r _
+	fi
+}
+
+# The seen marker is written before the popup opens, so the intro can never
+# show twice even if this process dies mid-way; a failed open takes the
+# marker back so the next server start tries again.
+open_intro_popup() {
+	: >"$INTRO_SEEN"
+	if "$HERDR" plugin pane open --plugin "${HERDR_PLUGIN_ID:-bleatr}" --entrypoint intro >/dev/null 2>&1; then
+		return 0
+	fi
+	rm -f "$INTRO_SEEN"
+	log "could not open the intro popup; read ON_STARTUP.md or run the bleatr.intro action"
+	"$HERDR" notification show "Bleatr is installed" --body "Run the bleatr.intro action for setup steps" >/dev/null 2>&1 || true
+	return 1
+}
+
+startup() {
+	[ -f "$INTRO_SEEN" ] && return 0
+	open_intro_popup
 }
 
 # ------------------------------------------------------------ mute state ---
@@ -615,8 +684,11 @@ mute) set_muted yes ;;
 unmute) set_muted no ;;
 config) print_config ;;
 setup) setup_config ;;
+intro) print_intro "${2:-}" ;;
+intro-popup) open_intro_popup ;;
+startup) startup ;;
 *)
-	log "usage: bleat [event|test|toggle|mute|unmute|config|setup]"
+	log "usage: bleat [event|test|toggle|mute|unmute|config|setup|intro|intro-popup|startup]"
 	exit 2
 	;;
 esac

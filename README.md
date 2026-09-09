@@ -10,7 +10,7 @@ something, Bleatr says one sentence with the macOS `say` command:
 
 ## Requirements
 
-- Herdr 0.7.0 or newer.
+- Herdr 0.9.0 or newer.
 - `bash` and `jq`.
 - macOS `say`. On Linux, `spd-say`, `espeak-ng`, or `espeak` is used when
   present.
@@ -31,6 +31,13 @@ Or link a local checkout:
 ```sh
 git clone https://github.com/zetlen/herdr-bleatr
 herdr plugin link herdr-bleatr
+```
+
+The next time the Herdr server starts, Bleatr opens `ON_STARTUP.md` in a
+popup once: what it does and three setup steps. Open it any time:
+
+```sh
+herdr plugin action invoke bleatr.intro
 ```
 
 Then speak a test notification from any agent pane:
