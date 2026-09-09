@@ -283,6 +283,26 @@ else
 	fail "setup leaves an existing config.toml alone" "$(cat "$CASE_DIR/config/config.toml")" "stdout: $out"
 fi
 
+setup startup-cost
+# An ignored event is the common case and runs on every status change, so it
+# has to be cheap. Measured over ten runs to smooth out scheduler noise.
+cat >"$CASE_DIR/config/config.toml" <<EOF
+voice = "Daniel"
+bell = "Crystal"
+notify_on = ["done", "blocked"]
+cooldown_seconds = 8
+say_command = 'true'
+EOF
+start_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
+for i in 1 2 3 4 5 6 7 8 9 10; do run_bleat working >/dev/null; done
+end_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
+per_run=$(((end_ms - start_ms) / 10))
+if [ "$per_run" -lt 150 ]; then
+	pass "an ignored event costs under 150 ms (${per_run} ms)"
+else
+	fail "an ignored event costs under 150 ms" "measured ${per_run} ms per run"
+fi
+
 setup lock-serializes
 export BLEATR_SAY_COMMAND="printf 'start\n' >> \"$CASE_DIR/order\"; sleep 1; printf 'end\n' >> \"$CASE_DIR/order\""
 export BLEATR_COOLDOWN_SECONDS=0
