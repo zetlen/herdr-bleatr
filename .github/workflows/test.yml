@@ -22,7 +22,7 @@ jobs:
         # macOS is the target platform. Ubuntu covers the other side of the
         # portability line bin/bleat is written to: mawk parsing config.toml,
         # dash as the /bin/sh that runs say_command and summarize_command, and
-        # coreutils `timeout` instead of the background-watcher fallback.
+        # GNU rather than BSD find, sed, and date.
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
