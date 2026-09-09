@@ -244,9 +244,13 @@ run_with_timeout() { # seconds cmd...
 	local pid=$!
 	(
 		sleep "$secs"
-		# Grandchildren too, or a shell wrapper dies while its model call lives on.
-		pkill -P "$pid" 2>/dev/null
+		# The wrapper goes first: a shell that loses the command it is running
+		# carries on to the next one, so killing what it runs only hurries it
+		# along. Its children are noted beforehand and killed by pid, which
+		# still reaches them once they are orphaned.
+		kids="$(pgrep -P "$pid" 2>/dev/null)"
 		kill "$pid" 2>/dev/null
+		[ -n "$kids" ] && kill $kids 2>/dev/null
 	) &
 	local watcher=$!
 	wait "$pid"
@@ -310,21 +314,27 @@ acquire_speech_lock() { # 0: the floor is ours, 1: someone else is speaking
 # has the floor, not the voice: `say` is that bleat's child, and under
 # `say_command` the real speaker is a grandchild with `sh -c` in between. A
 # signalled bleat dies without waiting for what it started, so anything alive
-# under it would be orphaned and talk on. The tree comes down from the bottom
+# under it would be orphaned and talk on. The tree comes down from the top
 # instead, the way run_with_timeout ends a wrapped summarizer, and the bleat's
 # own EXIT trap hands the lock back on the way out.
 skip_speech() {
-	local owner child
+	local owner child children kids
 	owner="$(cat "$SPEAK_LOCK/pid" 2>/dev/null)"
 	if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
 		debug "nothing is speaking; nothing to skip"
 		return 0
 	fi
-	for child in $(pgrep -P "$owner" 2>/dev/null); do
-		pkill -P "$child" 2>/dev/null
-		kill "$child" 2>/dev/null
+	# The whole tree is noted before any of it dies, and then killed from the
+	# top down. Taking the voice out from under its wrapper only frees the
+	# wrapper to run whatever came after it in the command.
+	children="$(pgrep -P "$owner" 2>/dev/null)"
+	kids=""
+	for child in $children; do
+		kids="$kids $(pgrep -P "$child" 2>/dev/null)"
 	done
 	kill "$owner" 2>/dev/null
+	[ -n "$children" ] && kill $children 2>/dev/null
+	[ -n "${kids// /}" ] && kill $kids 2>/dev/null
 	debug "skipped the sentence pid $owner was speaking"
 	return 0
 }
