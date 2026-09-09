@@ -9,8 +9,9 @@ voice = ""
 
 # Sound to play before speaking: false, a macOS alert sound name as shown in
 # System Settings such as "Crystal" (file names such as "Glass" work too;
-# looked up in ~/Library/Sounds and /System/Library/Sounds), or a file path.
-# Herdr plays its own sounds too; see [ui.sound] in config.toml.
+# looked up in ~/Library/Sounds and /System/Library/Sounds), or a file path
+# such as "~/Music/ding.wav". Herdr plays its own sounds too; see [ui.sound]
+# in config.toml.
 bell = false
 
 # Which small model writes the sentence.

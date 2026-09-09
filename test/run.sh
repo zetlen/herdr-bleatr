@@ -9,6 +9,7 @@
 set -uo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+REAL_HOME="$HOME"
 BLEAT="$ROOT/bin/bleat"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bleatr-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -139,6 +140,18 @@ if [ "$(cat "$CASE_DIR/order" | tr '\n' ' ')" = "bell say " ] && [ "$(cat "$CASE
 else
 	fail "the bell plays before speech" "$(cat "$CASE_DIR/order" 2>/dev/null | tr '\n' ' ')"
 fi
+
+setup bell-tilde
+: >"$CASE_DIR/ding.wav"
+export HOME="$CASE_DIR"
+export BLEATR_BELL="~/ding.wav"
+run_bleat done >/dev/null
+if [ "$(cat "$CASE_DIR/bell" 2>/dev/null)" = "$CASE_DIR/ding.wav" ]; then
+	pass "a leading ~ in the bell path is expanded"
+else
+	fail "a leading ~ in the bell path is expanded" "$(cat "$CASE_DIR/stderr")"
+fi
+export HOME="$REAL_HOME"
 
 setup bell-settings-name
 if [ -f /System/Library/Sounds/Glass.aiff ]; then

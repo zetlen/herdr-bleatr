@@ -405,8 +405,10 @@ bell_file() {
 	case "$BELL" in
 	false | no | off | 0 | "") return 1 ;;
 	esac
-	if [ -f "$BELL" ]; then
-		printf '%s' "$BELL"
+	# The config value is a literal string, so a leading ~ is expanded here.
+	local path="${BELL/#\~\//$HOME/}"
+	if [ -f "$path" ]; then
+		printf '%s' "$path"
 		return 0
 	fi
 	local dir name
