@@ -38,12 +38,15 @@ debug() { [ -n "${BLEATR_DEBUG:-}" ] && log "$@"; return 0; }
 
 # ----------------------------------------------------------------- config ---
 
-# A deliberately small TOML subset: one `key = value` per line, where value is
-# a double- or single-quoted string, a bare true/false/number, or a one-line
-# array of strings. Tables and multi-line values are ignored. The file is
-# parsed once, by one awk process, into CFG_<key> shell variables; the first
-# occurrence of a key wins. Values are assigned with printf -v rather than
-# eval, so nothing in the file is ever interpreted as shell.
+# A deliberately small TOML subset: `key = value` where value is a double- or
+# single-quoted string, a bare true/false/number, or a one-line array of
+# strings. Multi-line strings (`"""` and `'''`) work, and basic strings honor
+# TOML's escapes for `\"`, `\\`, `\n`, `\t`, and a line-ending backslash;
+# other backslashes pass through, since a say_command is full of them.
+# Tables are ignored. The file is parsed once, by one awk process, into
+# CFG_<key> shell variables; the first occurrence of a key wins. awk hands
+# each value over on one line with newlines, tabs, and backslashes escaped,
+# and printf %b undoes that. Nothing in the file is ever interpreted as shell.
 read_config_file() {
 	[ -r "$CONFIG_FILE" ] || return 0
 	local key value
@@ -51,21 +54,83 @@ read_config_file() {
 		case "$key" in
 		*[!a-z_]* | "") continue ;;
 		esac
-		printf -v "CFG_$key" '%s' "$value"
+		printf -v "CFG_$key" '%b' "$value"
 	done <<EOF
 $(awk '
+	# Index of the closing delimiter in s, skipping backslash escapes; 0 if
+	# none. Used for basic strings, one quote for single-line and three for
+	# multi-line.
+	function basic_end(s, from, delim,   i, c) {
+		for (i = from; i <= length(s); i++) {
+			c = substr(s, i, 1)
+			if (c == "\\") { i++; continue }
+			if (c == "\"" && substr(s, i, length(delim)) == delim) return i
+		}
+		return 0
+	}
+	function unescape(s,   out, i, n, c, d) {
+		out = ""; n = length(s)
+		for (i = 1; i <= n; i++) {
+			c = substr(s, i, 1)
+			if (c != "\\" || i == n) { out = out c; continue }
+			d = substr(s, i + 1, 1)
+			if (d == "n") { out = out "\n"; i++ }
+			else if (d == "t") { out = out "\t"; i++ }
+			else if (d == "\"" || d == "\\") { out = out d; i++ }
+			else if (substr(s, i + 1) ~ /^[ \t]*\n/) {
+				# Line-ending backslash: drop it and every blank through
+				# the next non-blank character.
+				i++
+				while (i < n && substr(s, i + 1, 1) ~ /[ \t\n]/) i++
+			}
+			else out = out c
+		}
+		return out
+	}
+	function emit(key, value,   out, i, c) {
+		if (dup) return
+		out = ""
+		for (i = 1; i <= length(value); i++) {
+			c = substr(value, i, 1)
+			if (c == "\\") out = out "\\\\"
+			else if (c == "\n") out = out "\\n"
+			else if (c == "\t") out = out "\\t"
+			else out = out c
+		}
+		printf "%s\t%s\n", key, out
+	}
+	# Closes a multi-line string when s holds its delimiter; the body so far
+	# is in body. Returns 1 when the string ended on this line.
+	function multi_close(s,   end) {
+		end = (mode == "lit") ? index(s, "\047\047\047") : basic_end(s, 1, "\"\"\"")
+		if (!end) { body = body s "\n"; return 0 }
+		body = body substr(s, 1, end - 1)
+		if (mode == "basic") body = unescape(body)
+		emit(key, body); mode = ""
+		return 1
+	}
+	mode != "" { multi_close($0); next }
 	/^[ \t]*#/ || /^[ \t]*$/ { next }
 	{
 		line = $0
 		if (!match(line, /^[ \t]*[a-z_]+[ \t]*=[ \t]*/)) next
 		key = substr(line, 1, RLENGTH)
 		sub(/^[ \t]*/, "", key); sub(/[ \t]*=.*$/, "", key)
-		if (key in seen) next
+		dup = (key in seen)
 		seen[key] = 1
 		value = substr(line, RLENGTH + 1)
 		c = substr(value, 1, 1)
+		if (substr(value, 1, 3) == "\"\"\"" || substr(value, 1, 3) == "\047\047\047") {
+			mode = (c == "\"") ? "basic" : "lit"
+			body = ""
+			# A newline right after the opening delimiter is not content.
+			if (substr(value, 4) != "") multi_close(substr(value, 4))
+			next
+		}
 		if (c == "\"") {
-			value = substr(value, 2); sub(/".*$/, "", value)
+			end = basic_end(value, 2, "\"")
+			value = substr(value, 2, (end ? end : length(value) + 1) - 2)
+			value = unescape(value)
 		} else if (c == "\047") {
 			value = substr(value, 2); sub(/\047.*$/, "", value)
 		} else if (c == "[") {
@@ -75,7 +140,7 @@ $(awk '
 		} else {
 			sub(/[ \t]*#.*$/, "", value); sub(/[ \t]*$/, "", value)
 		}
-		printf "%s\t%s\n", key, value
+		emit(key, value)
 	}' "$CONFIG_FILE")
 EOF
 }

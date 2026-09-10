@@ -90,6 +90,9 @@ back to the machine you are sitting at:
   say_command = "ssh my-mac say -- \"$BLEATR_MESSAGE\""
   ```
 
+  A long command can span lines in a TOML multi-line string (`"""` or
+  `'''`); a `"""` string joins lines at a trailing backslash.
+
 The sentence is stripped of shell metacharacters — `$`, backticks, quotes,
 `;`, `&`, `|`, redirections, parentheses, braces — before it reaches
 `say_command`. It is written by a model reading terminal output that the

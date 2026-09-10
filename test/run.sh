@@ -563,6 +563,60 @@ else
 	fail "bleat config prints effective settings" "$out"
 fi
 
+# A long say_command wants to span lines. Both TOML multi-line forms must
+# reach `sh -c` as one runnable command: `"""` joins lines at a trailing
+# backslash and decodes \" and \\, while ''' is verbatim, so a shell-style
+# continuation is left for sh to handle. The config is written through a
+# quoted heredoc so only TOML's escaping is in play; $HERDR_PLUGIN_CONFIG_DIR
+# reaches the command through the environment.
+setup config-multiline
+unset BLEATR_SAY_COMMAND BLEATR_SUMMARY_MODEL
+cat >"$CASE_DIR/config/config.toml" <<'EOF'
+summary_model = 'none'
+cooldown_seconds = 0
+say_command = """
+printf '%s|%s\\n' \
+  "$BLEATR_MESSAGE" 'quote:\"\\' \
+  >> "$HERDR_PLUGIN_CONFIG_DIR/../said"
+"""
+say_command = 'second occurrence is ignored'
+summarize_command = '''
+printf '%s\n' "$BLEATR_PROMPT_FILE" \
+  >> "$HERDR_PLUGIN_CONFIG_DIR/../summarize-args"
+'''
+EOF
+run_bleat done >/dev/null
+if [ "$(said)" = 'Claude in herdr-bleatr finished and is waiting for you.|quote:"\' ]; then
+	pass 'config.toml: a """ say_command joins at trailing backslashes and decodes escapes'
+else
+	fail 'config.toml: a """ say_command joins at trailing backslashes and decodes escapes' "$(said)"
+fi
+out="$(bash "$BLEAT" config 2>/dev/null)"
+if printf '%s\n' "$out" | grep -qF 'say_command=printf '"'"'%s|%s\n'"'"' "$BLEATR_MESSAGE" '"'"'quote:"\'"'"' >> "$HERDR_PLUGIN_CONFIG_DIR/../said"'; then
+	pass 'config.toml: the first say_command wins over a later duplicate'
+else
+	fail 'config.toml: the first say_command wins over a later duplicate' "$out"
+fi
+if printf '%s\n' "$out" | grep -qF '  >> "$HERDR_PLUGIN_CONFIG_DIR/../summarize-args"'; then
+	pass "config.toml: a ''' summarize_command keeps its newlines and backslashes"
+else
+	fail "config.toml: a ''' summarize_command keeps its newlines and backslashes" "$out"
+fi
+
+# The README's own example splices the sentence in with \" escapes.
+setup config-escaped-quotes
+unset BLEATR_SAY_COMMAND BLEATR_SUMMARY_MODEL
+cat >"$CASE_DIR/config/config.toml" <<'EOF'
+summary_model = 'none'
+say_command = "printf '%s\\n' \"$BLEATR_MESSAGE\" >> \"$HERDR_PLUGIN_CONFIG_DIR/../said\""
+EOF
+run_bleat done >/dev/null
+if [ "$(said)" = 'Claude in herdr-bleatr finished and is waiting for you.' ]; then
+	pass 'config.toml: \" inside a double-quoted say_command is a quote, not the end'
+else
+	fail 'config.toml: \" inside a double-quoted say_command is a quote, not the end' "$(said)"
+fi
+
 setup env-overrides-file
 printf 'voice = "Daniel"\n' >"$CASE_DIR/config/config.toml"
 out="$(BLEATR_VOICE=Samantha bash "$BLEAT" config 2>/dev/null)"

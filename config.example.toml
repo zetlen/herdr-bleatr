@@ -59,8 +59,13 @@ summary_timeout_seconds = 25
 # Run this instead of `say`. Runs under `sh -c` with the sentence in
 # $BLEATR_MESSAGE. `voice` and `rate` are ignored when set.
 # say_command = 'say -v Daniel -r 200 "$BLEATR_MESSAGE"'
-# A Pocket TTS server (see `bleatr.intro`) streams a WAV to any player:
-# say_command = 'curl -s --data-urlencode "text=$BLEATR_MESSAGE" -d voice_url=alba http://127.0.0.1:8000/tts | ffplay -nodisp -autoexit -loglevel quiet -'
+# A Pocket TTS server (see `bleatr.intro`) streams a WAV to any player. A
+# long command can span lines in a TOML multi-line string: `"""` joins lines
+# at a trailing backslash, and ''' hands the text to sh verbatim.
+# say_command = """
+# curl -s --data-urlencode "text=$BLEATR_MESSAGE" -d voice_url=alba http://127.0.0.1:8000/tts \
+#   | ffplay -nodisp -autoexit -loglevel quiet -
+# """
 
 # Run this instead of the summary_model preset. Runs under `sh -c` with the
 # prompt path in $BLEATR_PROMPT_FILE and the prompt text on stdin; it must
