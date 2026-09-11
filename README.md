@@ -2,11 +2,11 @@
 
 A [Herdr](https://herdr.dev) plugin that speaks agent notifications aloud. When
 an agent in a tab you are not looking at finishes, or stops to ask you
-something, Bleatr says one sentence with the macOS `say` command:
+something, Bleatr says one short sentence with the macOS `say` command:
 
-> "Claude in herdr-bleatr finished the notifications plugin and is waiting for review."
+> "Claude in herdr-bleatr finished the notifications plugin."
 
-> "Codex in api needs approval to run the database migration."
+> "Codex in api needs approval to run the migration."
 
 ## Requirements
 
@@ -55,7 +55,8 @@ herdr plugin action invoke bleatr.setup
 ```
 
 A Herdr toast shows the file's path, and an existing config file is left
-alone. Every key is documented in the file. Print the config directory:
+alone. Every setting in the file is documented and commented out at its
+default; uncomment one to change it. Print the config directory:
 
 ```sh
 herdr plugin config-dir bleatr

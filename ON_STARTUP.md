@@ -1,8 +1,8 @@
 Bleatr speaks agent notifications aloud. When an agent in a tab you are not
-looking at finishes, or stops to ask you something, it says one sentence:
+looking at finishes, or stops to ask you something, it says one short
+sentence:
 
-    "Claude in herdr-bleatr finished the plugin tests and wants you to
-    review the README."
+    "Claude in herdr-bleatr finished the plugin tests."
 
 Bleatr works without a config file. The three steps below tune it.
 
@@ -187,8 +187,8 @@ decoder.
 
 ## Set it up
 
-Create the config file, then edit the keys above in it. Every key is
-documented in the file:
+Create the config file, then uncomment and edit the settings above in it.
+Each one is documented there and shown at its default:
 
     herdr plugin action invoke bleatr.setup
 

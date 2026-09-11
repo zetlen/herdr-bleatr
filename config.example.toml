@@ -1,17 +1,23 @@
 # Herdr Bleatr configuration.
 # `herdr plugin action invoke bleatr.setup` copies this file to the directory
 # printed by `herdr plugin config-dir bleatr` as config.toml.
-# Every key is optional; the values shown are the defaults unless noted.
-# Any key can also be set with an env var: BLEATR_VOICE, BLEATR_BELL, and so on.
+#
+# Every setting below is commented out and shows its default value. A
+# commented-out setting follows the plugin's default, which an update can
+# change. To set your own value, delete the `# ` in front of the setting and
+# edit it. Lines after "For example" are other values to try, not defaults.
+#
+# Any setting can also come from an env var: BLEATR_VOICE, BLEATR_BELL, and
+# so on.
 
 # Voice for `say`. Empty uses the system voice. List voices with `say -v '?'`.
-voice = ""
+# voice = ""
 
 # Speech rate in words per minute. Empty passes no rate flag, which leaves
 # `say` and espeak at their own default of about 175 wpm. spd-say takes a
 # relative -100 to 100 rather than words per minute; the number set here is
 # converted for it.
-rate = ""
+# rate = ""
 
 # Sound to play before speaking: false, a macOS alert sound name as shown in
 # System Settings such as "Crystal" (file names such as "Glass" work too;
@@ -23,45 +29,53 @@ rate = ""
 # from. "terminal" instead hands the bell to Herdr as a notification with its
 # `done` or `request` sound, which follows your `[ui.toast]` delivery and so
 # reaches you over SSH. See [ui.sound] in Herdr's config.toml as well.
-bell = false
+# bell = false
 
 # Which small model writes the sentence.
 #   "claude"  runs `claude -p --model haiku` (Claude Code) with extended
 #             thinking off; about 3 seconds and half a cent per notification
 #   "codex"   runs `codex exec --model gpt-5.6-luna` (Codex CLI)
 #   "none"    skips the model and speaks a plain template sentence
-summary_model = "claude"
+# summary_model = "claude"
 
-# Override the preset's model id, for example "claude-haiku-4-5".
-model_id = ""
+# Override the preset's model id, for example "claude-haiku-4-5". Empty keeps
+# the preset's own model.
+# model_id = ""
 
 # Agent statuses that are spoken. `done` means the agent went idle and you
 # have not looked at its pane since; `blocked` means it is waiting for
 # approval or an answer. `idle` and `unknown` are also accepted but noisy.
 # Nothing is spoken for a pane in the tab you are looking at, whatever its
 # status; the `test` action is the one exception.
-notify_on = ["done", "blocked"]
+# notify_on = ["done", "blocked"]
 
 # Ignore a repeat of the same pane and status inside this many seconds.
-cooldown_seconds = 8
+# cooldown_seconds = 8
 
-# Word budget given to the model for the spoken sentence.
-max_words = 25
+# Most words in the spoken sentence, counting the opening "Claude in api".
+# The model is asked to stay inside it, and a longer sentence is cut back to
+# it. Ten words take three or four seconds to say.
+# max_words = 10
 
 # Lines of recent terminal output sent to the model as the agent's last message.
-transcript_lines = 60
+# transcript_lines = 60
 
 # Give up on the model after this long and speak the template sentence.
-summary_timeout_seconds = 25
+# summary_timeout_seconds = 25
 
 # --- Advanced ---------------------------------------------------------------
 
 # Run this instead of `say`. Runs under `sh -c` with the sentence in
 # $BLEATR_MESSAGE. `voice` and `rate` are ignored when set.
+# say_command = ""
+#
+# For example, `say` with a voice and rate of its own:
 # say_command = 'say -v Daniel -r 200 "$BLEATR_MESSAGE"'
-# A Pocket TTS server (see `bleatr.intro`) streams a WAV to any player. A
-# long command can span lines in a TOML multi-line string: `"""` joins lines
-# at a trailing backslash, and ''' hands the text to sh verbatim.
+#
+# For example, a Pocket TTS server (see `bleatr.intro`), which streams a WAV
+# to any player. A long command can span lines in a TOML multi-line string:
+# `"""` joins lines at a trailing backslash, and ''' hands the text to sh
+# verbatim.
 # say_command = """
 # curl -s --data-urlencode "text=$BLEATR_MESSAGE" -d voice_url=alba http://127.0.0.1:8000/tts \
 #   | ffplay -nodisp -autoexit -loglevel quiet -
@@ -70,7 +84,10 @@ summary_timeout_seconds = 25
 # Run this instead of the summary_model preset. Runs under `sh -c` with the
 # prompt path in $BLEATR_PROMPT_FILE and the prompt text on stdin; it must
 # print the sentence on stdout. `summary_model` and `model_id` are ignored
-# when set. Any CLI that reads a prompt on stdin works:
+# when set.
+# summarize_command = ""
+#
+# For example, any CLI that reads a prompt on stdin:
 # summarize_command = 'gemini -m gemini-2.5-flash < "$BLEATR_PROMPT_FILE"'
 # summarize_command = 'opencode run -m anthropic/claude-haiku-4-5 --variant fast'
 # summarize_command = 'llm -m claude-haiku-4.5'

@@ -198,6 +198,24 @@ else
 	fail "a long summary is cut to max_words whole words" "$(said)"
 fi
 
+setup max-words-clean-cut
+# A cut that lands on "for your" or on a list's "and" would sound like the
+# voice broke off mid-thought, so those words and a trailing comma come off.
+export BLEATR_COOLDOWN_SECONDS=0
+export BLEATR_MAX_WORDS=8
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr opened the diff for your review.\n'"
+run_bleat done >/dev/null
+first="$(said)"
+rm -f "$CASE_DIR/said"
+export BLEATR_MAX_WORDS=7
+export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr added docs, tests, and a config example.\n'"
+run_bleat done >/dev/null
+if [ "$first" = "Claude in herdr-bleatr opened the diff" ] && [ "$(said)" = "Claude in herdr-bleatr added docs, tests" ]; then
+	pass "a cut drops the function words and comma it would end on"
+else
+	fail "a cut drops the function words and comma it would end on" "$first" "$(said)"
+fi
+
 setup max-words-inside-budget
 export BLEATR_MAX_WORDS=25
 export BLEATR_SUMMARIZE_COMMAND="printf 'Claude in herdr-bleatr fixed the parser and stopped.\n'"
@@ -624,6 +642,34 @@ if printf '%s\n' "$out" | grep -q '^voice=Samantha$'; then
 	pass "an env var overrides config.toml"
 else
 	fail "an env var overrides config.toml" "$out"
+fi
+
+setup example-config
+# config.example.toml pins nothing: copied as it is, it leaves every setting at
+# the script's default, so a later change to a default reaches the user. Each
+# setting's first `# key = value` line is shown as that default, so
+# uncommenting all of them must change nothing either. The env overrides the
+# other cases leave behind would mask both, so they go first.
+unset BLEATR_VOICE BLEATR_RATE BLEATR_BELL BLEATR_SUMMARY_MODEL BLEATR_MODEL_ID BLEATR_NOTIFY_ON \
+	BLEATR_COOLDOWN_SECONDS BLEATR_MAX_WORDS BLEATR_TRANSCRIPT_LINES BLEATR_SUMMARY_TIMEOUT_SECONDS \
+	BLEATR_SAY_COMMAND BLEATR_SUMMARIZE_COMMAND
+bash "$BLEAT" config 2>/dev/null | tail -n +4 >"$CASE_DIR/defaults"
+cp "$ROOT/config.example.toml" "$CASE_DIR/config/config.toml"
+bash "$BLEAT" config 2>/dev/null | tail -n +4 >"$CASE_DIR/as-copied"
+if ! grep -qE '^[[:space:]]*[a-z_]+[[:space:]]*=' "$ROOT/config.example.toml" && cmp -s "$CASE_DIR/defaults" "$CASE_DIR/as-copied"; then
+	pass "config.example.toml has every setting commented out"
+else
+	fail "config.example.toml has every setting commented out" "$(grep -nE '^[[:space:]]*[a-z_]+[[:space:]]*=' "$ROOT/config.example.toml")"
+fi
+awk '/^# [a-z_]+ = / && !($2 in seen) { seen[$2] = 1; sub(/^# /, "") } { print }' \
+	"$ROOT/config.example.toml" >"$CASE_DIR/config/config.toml"
+bash "$BLEAT" config 2>/dev/null | tail -n +4 >"$CASE_DIR/uncommented"
+if [ "$(grep -cE '^[a-z_]+ = ' "$CASE_DIR/config/config.toml")" = "$(wc -l <"$CASE_DIR/defaults" | tr -d ' ')" ] &&
+	cmp -s "$CASE_DIR/defaults" "$CASE_DIR/uncommented"; then
+	pass "config.example.toml shows every setting at the script's default"
+else
+	fail "config.example.toml shows every setting at the script's default" \
+		"$(diff "$CASE_DIR/defaults" "$CASE_DIR/uncommented")" "$(grep -E '^[a-z_]+ = ' "$CASE_DIR/config/config.toml")"
 fi
 
 setup setup-creates-config
